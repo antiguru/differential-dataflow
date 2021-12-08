@@ -8,9 +8,10 @@
 
 use timely::dataflow::Scope;
 
-use ::{Collection, ExchangeData, Hashable};
+use ::{Collection, ExchangeData, Hashable, TimelyContainer};
 use ::difference::Semigroup;
 use operators::arrange::arrangement::Arrange;
+use consolidation::Consolidation;
 
 /// An extension method for consolidating weighted streams.
 pub trait Consolidate<D: ExchangeData+Hashable> : Sized {
@@ -96,8 +97,9 @@ pub trait ConsolidateStream<D: ExchangeData+Hashable> {
     fn consolidate_stream(&self) -> Self;
 }
 
-impl<G: Scope, D, R> ConsolidateStream<D> for Collection<G, D, R>
+impl<G: Scope, D, R, C> ConsolidateStream<D> for Collection<G, D, R, C>
 where
+    C: Consolidation+TimelyContainer<Item=(D, G::Timestamp, R)>,
     D: ExchangeData+Hashable,
     R: ExchangeData+Semigroup,
     G::Timestamp: ::lattice::Lattice+Ord,
@@ -111,12 +113,12 @@ where
         self.inner
             .unary(Pipeline, "ConsolidateStream", |_cap, _info| {
 
-                let mut vector = Vec::new();
+                let mut vector = C::default();
                 move |input, output| {
                     input.for_each(|time, data| {
                         data.swap(&mut vector);
-                        crate::consolidation::consolidate_updates(&mut vector);
-                        output.session(&time).give_vec(&mut vector);
+                        vector.consolidate();
+                        output.session(&time).give_container(&mut vector);
                     })
                 }
             })
