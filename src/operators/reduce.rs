@@ -10,7 +10,7 @@ use ::{Data, ExchangeData, Collection};
 use ::difference::{Semigroup, Abelian};
 
 use timely::order::PartialOrder;
-use timely::progress::frontier::Antichain;
+use timely::progress::frontier::{Antichain, MutableAntichain};
 use timely::progress::Timestamp;
 use timely::dataflow::*;
 use timely::dataflow::channels::pact::Pipeline;
@@ -301,6 +301,20 @@ pub trait ReduceCore<G: Scope, K: Data, V: Data, R: Semigroup> where G::Timestam
             T2::R: Semigroup,
             T2::Batch: Batch,
             L: FnMut(&K, &[(&V, R)], &mut Vec<(T2::Val,T2::R)>, &mut Vec<(T2::Val,T2::R)>)+'static
+    {
+        self.reduce_core_op(name, logic, |_| |_| {})
+    }
+
+    /// Like `reduce_core`, but allows access to the builder constructing the operator.
+    fn reduce_core_op<L, T2, C, L2>(&self, name: &str, logic: L, construct: C) -> Arranged<G, TraceAgent<T2>>
+        where
+            T2: Trace+TraceReader<Key=K, Time=G::Timestamp>+'static,
+            T2::Val: Data,
+            T2::R: Semigroup,
+            T2::Batch: Batch,
+            L: FnMut(&K, &[(&V, R)], &mut Vec<(T2::Val,T2::R)>, &mut Vec<(T2::Val, T2::R)>)+'static,
+            C: FnOnce(&mut OperatorBuilder<G>) -> L2 + 'static,
+            L2: FnMut(&[MutableAntichain<G::Timestamp>]) + 'static,
             ;
 }
 
@@ -312,16 +326,18 @@ where
     V: ExchangeData,
     R: ExchangeData+Semigroup,
 {
-    fn reduce_core<L, T2>(&self, name: &str, logic: L) -> Arranged<G, TraceAgent<T2>>
+    fn reduce_core_op<L, T2, C, L2>(&self, name: &str, logic: L, construct: C) -> Arranged<G, TraceAgent<T2>>
         where
+            T2: Trace+TraceReader<Key=K, Time=G::Timestamp>+'static,
             T2::Val: Data,
             T2::R: Semigroup,
-            T2: Trace+TraceReader<Key=K, Time=G::Timestamp>+'static,
             T2::Batch: Batch,
-            L: FnMut(&K, &[(&V, R)], &mut Vec<(T2::Val,T2::R)>, &mut Vec<(T2::Val, T2::R)>)+'static
+            L: FnMut(&K, &[(&V, R)], &mut Vec<(T2::Val,T2::R)>, &mut Vec<(T2::Val, T2::R)>)+'static,
+            C: FnOnce(&mut OperatorBuilder<G>) -> L2 + 'static,
+            L2: FnMut(&[MutableAntichain<G::Timestamp>]) + 'static,
     {
         self.arrange_by_key_named(&format!("Arrange: {}", name))
-            .reduce_core(name, logic)
+            .reduce_core_op(name, logic, construct)
     }
 }
 
@@ -330,19 +346,24 @@ where
     G::Timestamp: Lattice+Ord,
     T1: TraceReader<Key=K, Val=V, Time=G::Timestamp, R=R>+Clone+'static,
 {
-    fn reduce_core<L, T2>(&self, name: &str, mut logic: L) -> Arranged<G, TraceAgent<T2>>
+    fn reduce_core_op<L, T2, C, L2>(&self, name: &str, mut logic: L, construct: C) -> Arranged<G, TraceAgent<T2>>
         where
             T2: Trace+TraceReader<Key=K, Time=G::Timestamp>+'static,
             T2::Val: Data,
             T2::R: Semigroup,
             T2::Batch: Batch,
-            L: FnMut(&K, &[(&V, R)], &mut Vec<(T2::Val,T2::R)>, &mut Vec<(T2::Val, T2::R)>)+'static {
+            L: FnMut(&K, &[(&V, R)], &mut Vec<(T2::Val,T2::R)>, &mut Vec<(T2::Val, T2::R)>)+'static,
+            C: FnOnce(&mut OperatorBuilder<G>) -> L2 + 'static,
+            L2: FnMut(&[MutableAntichain<G::Timestamp>]) + 'static,
+    {
 
         let mut builder = OperatorBuilder::new(name.to_owned(), self.stream.scope());
         let operator_info = builder.operator_info();
 
         let mut input = builder.new_input(&self.stream, Pipeline);
         let (mut output, stream) = builder.new_output();
+
+        let mut user_op = construct(&mut builder);
 
         let logger = {
             let scope = self.stream.scope();
@@ -393,6 +414,7 @@ where
 
         builder.build(move |_capabilities| {
             move |frontiers| {
+                user_op(&frontiers[1..]);
                 let mut input = FrontieredInputHandleCore::new(&mut input, &frontiers[0]);
                 let mut output = output.activate();
 
