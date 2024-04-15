@@ -67,6 +67,7 @@ mod val_batch {
 
     use std::marker::PhantomData;
     use abomonation_derive::Abomonation;
+    use timely::Container;
     use timely::progress::{Antichain, frontier::AntichainRef};
 
     use crate::trace::{Batch, BatchReader, Builder, Cursor, Description, Merger};
@@ -561,9 +562,7 @@ mod val_batch {
         }
 
         fn push_batch(&mut self, batch: &mut Self::InputBatch) {
-            for datum in batch.drain(..) {
-                self.push(datum);
-            }
+            todo!()
         }
 
         #[inline]
@@ -643,10 +642,11 @@ mod key_batch {
 
     use std::marker::PhantomData;
     use abomonation_derive::Abomonation;
+    use timely::Container;
     use timely::progress::{Antichain, frontier::AntichainRef};
 
     use crate::trace::{Batch, BatchReader, Builder, Cursor, Description, Merger};
-    use crate::trace::implementations::BatchContainer;
+    use crate::trace::implementations::{BatchContainer, UpdateLayout};
     use crate::trace::cursor::MyTrait;
 
     use super::{Layout, Update};
@@ -1013,7 +1013,7 @@ mod key_batch {
 
     impl<L: Layout> Builder for OrdKeyBuilder<L> {
 
-        type InputBatch = Vec<Self::Input>;
+        type InputBatch = Vec<((<L::Target as Update>::Key, ()), <L::Target as Update>::Time, <L::Target as Update>::Diff)>;
         type Input = ((<L::Target as Update>::Key, ()), <L::Target as Update>::Time, <L::Target as Update>::Diff);
         type Time = <L::Target as Update>::Time;
         type Output = OrdKeyBatch<L>;
@@ -1032,9 +1032,7 @@ mod key_batch {
         }
 
         fn push_batch(&mut self, batch: &mut Self::InputBatch) {
-            for datum in batch.drain(..) {
-                self.push(datum);
-            }
+            todo!()
         }
 
         #[inline]

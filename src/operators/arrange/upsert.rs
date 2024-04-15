@@ -136,7 +136,7 @@ where
     Tr::ValOwned: ExchangeData,
     Tr::Time: TotalOrder+ExchangeData,
     Tr::Batch: Batch,
-    Tr::Builder: Builder<Input = ((Tr::KeyOwned, Tr::ValOwned), Tr::Time, Tr::Diff)>,
+    Tr::Builder: Builder<InputBatch=Vec<((Tr::KeyOwned, Tr::ValOwned), Tr::Time, Tr::Diff)>, Input = ((Tr::KeyOwned, Tr::ValOwned), Tr::Time, Tr::Diff)>,
 {
     let mut reader: Option<TraceAgent<Tr>> = None;
 

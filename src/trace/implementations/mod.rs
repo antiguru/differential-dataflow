@@ -62,6 +62,32 @@ use timely::container::columnation::{Columnation, TimelyStack};
 use crate::lattice::Lattice;
 use crate::difference::Semigroup;
 
+/// TODO
+pub trait UpdateLayout {
+    /// TODO
+    type Key<'a> where Self: 'a;
+    /// TODO
+    type Val<'a> where Self: 'a;
+    /// TODO
+    type Time<'a> where Self: 'a;
+    /// TODO
+    type Diff<'a> where Self: 'a;
+}
+
+impl<K,V,T,R> UpdateLayout for ((K,V),T,R) {
+    type Key<'a> = K where Self: 'a;
+    type Val<'a> = V where Self: 'a;
+    type Time<'a> = T where Self: 'a;
+    type Diff<'a> = R where Self: 'a;
+}
+
+impl<K,V,T,R> UpdateLayout for &((K,V),T,R) {
+    type Key<'a> = &'a K where Self: 'a;
+    type Val<'a> = &'a V where Self: 'a;
+    type Time<'a> = &'a T where Self: 'a;
+    type Diff<'a> = &'a R where Self: 'a;
+}
+
 /// A type that names constituent update types.
 pub trait Update {
     /// Key by which data are grouped.

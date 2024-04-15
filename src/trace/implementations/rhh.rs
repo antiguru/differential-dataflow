@@ -764,9 +764,7 @@ mod val_batch {
         }
 
         fn push_batch(&mut self, batch: &mut Self::InputBatch) {
-            for datum in batch.drain(..) {
-                self.push(datum);
-            }
+            todo!()
         }
 
         #[inline]

@@ -13,6 +13,7 @@ pub mod implementations;
 pub mod wrappers;
 
 use timely::communication::message::RefOrMut;
+use timely::Container;
 use timely::logging::WorkerIdentifier;
 use timely::logging_core::Logger;
 use timely::progress::{Antichain, frontier::AntichainRef};
@@ -22,6 +23,7 @@ use crate::logging::DifferentialEvent;
 use crate::trace::cursor::MyTrait;
 use crate::difference::Semigroup;
 use crate::lattice::Lattice;
+use crate::trace::implementations::UpdateLayout;
 // use ::difference::Semigroup;
 pub use self::cursor::Cursor;
 pub use self::description::Description;
@@ -213,7 +215,7 @@ where <Self as TraceReader>::Batch: Batch {
     /// A type used to assemble batches from disordered updates.
     type Batcher: Batcher<Time = Self::Time>;
     /// A type used to assemble batches from ordered update sequences.
-    type Builder: Builder<Input=<Self::Batcher as Batcher>::Output, Time=Self::Time, Output = Self::Batch>;
+    type Builder: Builder<InputBatch=<Self::Batcher as Batcher>::OutputBatch, Input=<Self::Batcher as Batcher>::Output, Time=Self::Time, Output = Self::Batch>;
 
     /// Allocates a new empty trace.
     fn new(
@@ -310,6 +312,8 @@ pub trait Batcher {
     type Input;
     /// Type produced by the batcher.
     type Output;
+    /// TODO
+    type OutputBatch;
     /// Times at which batches are formed.
     type Time: Timestamp;
     /// Allocates a new empty batcher.
@@ -317,7 +321,7 @@ pub trait Batcher {
     /// Adds an unordered batch of elements to the batcher.
     fn push_batch(&mut self, batch: RefOrMut<Self::Input>);
     /// Returns all updates not greater or equal to an element of `upper`.
-    fn seal<B: Builder<Input=Self::Output, Time=Self::Time>>(&mut self, upper: Antichain<Self::Time>) -> B::Output;
+    fn seal<B: Builder<InputBatch=Self::OutputBatch, Input=Self::Output, Time=Self::Time>>(&mut self, upper: Antichain<Self::Time>) -> B::Output;
     /// Returns the lower envelope of contained update times.
     fn frontier(&mut self) -> timely::progress::frontier::AntichainRef<Self::Time>;
 }
@@ -378,7 +382,7 @@ pub trait Merger<Output: Batch> {
 
 /// Blanket implementations for reference counted batches.
 pub mod rc_blanket_impls {
-
+    use std::marker::PhantomData;
     use std::rc::Rc;
 
     use timely::progress::{Antichain, frontier::AntichainRef};

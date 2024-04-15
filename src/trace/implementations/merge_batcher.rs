@@ -27,6 +27,7 @@ where
 {
     type Input = Vec<((K,V),T,D)>;
     type Output = ((K,V),T,D);
+    type OutputBatch = Vec<((K,V),T,D)>;
     type Time = T;
 
     fn new(logger: Option<Logger<DifferentialEvent, WorkerIdentifier>>, operator_id: usize) -> Self {
@@ -59,7 +60,7 @@ where
     // which we call `lower`, by assumption that after sealing a batcher we receive no more
     // updates with times not greater or equal to `upper`.
     #[inline(never)]
-    fn seal<B: Builder<Input=Self::Output, Time=Self::Time>>(&mut self, upper: Antichain<T>) -> B::Output {
+    fn seal<B: Builder<InputBatch=Self::OutputBatch, Input=Self::Output, Time=Self::Time>>(&mut self, upper: Antichain<T>) -> B::Output {
 
         let mut merged = Vec::new();
         self.sorter.finish_into(&mut merged);
