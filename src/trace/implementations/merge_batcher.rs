@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 
 use timely::communication::message::RefOrMut;
+use timely::container::PushInto;
 use timely::logging::WorkerIdentifier;
 use timely::logging_core::Logger;
 use timely::progress::{frontier::Antichain, Timestamp};
@@ -11,19 +12,98 @@ use crate::difference::Semigroup;
 use crate::logging::{BatcherEvent, DifferentialEvent};
 use crate::trace::{Batcher, Builder};
 
+struct VectorUpdate<D, T, R>(Vec<(D,T,R)>);
+// impl<D,T,R> PushInto<VectorUpdate<D,T,R>> for (&D, &T, &R) {
+//     fn push_into(self, target: &mut VectorUpdate<D, T, R>) {
+//         todo!()
+//     }
+// }
+impl<'a, D: Ord,T: Ord,R> PushInto<VectorUpdate<D,T,R>> for (
+    <<VectorUpdate<D,T,R> as InternalContainer>::Item<'a> as DataUpdate>::Data<'a>,
+    <<VectorUpdate<D,T,R> as InternalContainer>::Item<'a> as DataUpdate>::Time<'a>,
+    <<VectorUpdate<D,T,R> as InternalContainer>::Item<'a> as DataUpdate>::Diff<'a>
+    ) {
+    fn push_into(self, target: &mut VectorUpdate<D, T, R>) {
+        todo!()
+    }
+}
+
+trait InternalContainer {
+    type Item<'a> where Self: 'a;
+    fn with_capacity(capacity: usize) -> Self;
+    fn preferred_capacity() -> usize;
+    fn len(&self) -> usize;
+}
+
+impl<D,T,R> InternalContainer for VectorUpdate<D,T,R> {
+    type Item<'a> = &'a (D,T,R) where Self: 'a;
+    fn with_capacity(capacity: usize) -> Self {
+        Self(Vec::with_capacity(capacity))
+    }
+    fn preferred_capacity() -> usize {
+        const BUFFER_SIZE_BYTES: usize = 1 << 13;
+
+        let size = ::std::mem::size_of::<D>();
+        if size == 0 {
+            BUFFER_SIZE_BYTES
+        } else if size <= BUFFER_SIZE_BYTES {
+            BUFFER_SIZE_BYTES / size
+        } else {
+            1
+        }
+    }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+trait DataUpdate {
+    type Data<'a>: Ord where Self: 'a;
+    type Time<'a>: Ord where Self: 'a;
+    type Diff<'a> where Self: 'a;
+
+    fn data(&self) -> Self::Data<'_>;
+    fn time(&self) -> Self::Time<'_>;
+    fn diff(&self) -> Self::Diff<'_>;
+}
+
+impl<D: Ord, T: Ord, R> DataUpdate for &(D, T, R) {
+    type Data<'a> = &'a D where Self: 'a;
+    type Time<'a> = &'a T where Self: 'a;
+    type Diff<'a> = &'a R where Self: 'a;
+
+    fn data(&self) -> Self::Data<'_> {
+        &self.0
+    }
+
+    fn time(&self) -> Self::Time<'_> {
+        &self.1
+    }
+
+    fn diff(&self) -> Self::Diff<'_> {
+        &self.2
+    }
+}
+
 /// Creates batches from unordered tuples.
 pub struct MergeBatcher<K, V, T, D> {
-    sorter: MergeSorter<(K, V), T, D>,
+    sorter: MergeSorter<VectorUpdate<(K, V), T, D>>,
     lower: Antichain<T>,
     frontier: Antichain<T>,
 }
 
 impl<K, V, T, D> Batcher for MergeBatcher<K, V, T, D>
 where
-    K: Ord + Clone,
-    V: Ord + Clone,
-    T: Timestamp,
-    D: Semigroup,
+    K: Ord + Clone + 'static,
+    V: Ord + Clone + 'static,
+    T: Timestamp + 'static,
+    D: Semigroup + 'static,
+    for<'a> <VectorUpdate<(K,V),T,D> as InternalContainer>::Item<'a>: DataUpdate,
+    for<'a> (
+        <<VectorUpdate<(K,V),T,D> as InternalContainer>::Item<'a> as DataUpdate>::Data<'a>,
+        <<VectorUpdate<(K,V),T,D> as InternalContainer>::Item<'a> as DataUpdate>::Time<'a>,
+        <<VectorUpdate<(K,V),T,D> as InternalContainer>::Item<'a> as DataUpdate>::Diff<'a>
+    ): PushInto<VectorUpdate<(K,V),T,D>>,
 {
     type Input = Vec<((K,V),T,D)>;
     type Output = ((K,V),T,D);
@@ -151,27 +231,22 @@ where
     }
 }
 
-struct MergeSorter<D, T, R> {
+struct MergeSorter<C: InternalContainer> {
     /// each power-of-two length list of allocations. Do not push/pop directly but use the corresponding functions.
-    queue: Vec<Vec<Vec<(D, T, R)>>>,
-    stash: Vec<Vec<(D, T, R)>>,
+    queue: Vec<Vec<C>>,
+    stash: Vec<C>,
     logger: Option<Logger<DifferentialEvent, WorkerIdentifier>>,
     operator_id: usize,
 }
 
-impl<D: Ord, T: Ord, R: Semigroup> MergeSorter<D, T, R> {
-
-    const BUFFER_SIZE_BYTES: usize = 1 << 13;
+impl<C: InternalContainer> MergeSorter<C>
+where
+    for<'a> C::Item<'a>: DataUpdate,
+    for<'a> (<C::Item<'a> as DataUpdate>::Data<'a>, <C::Item<'a> as DataUpdate>::Time<'a>, <C::Item<'a> as DataUpdate>::Diff<'a>): PushInto<C>,
+{
 
     fn buffer_size() -> usize {
-        let size = ::std::mem::size_of::<(D, T, R)>();
-        if size == 0 {
-            Self::BUFFER_SIZE_BYTES
-        } else if size <= Self::BUFFER_SIZE_BYTES {
-            Self::BUFFER_SIZE_BYTES / size
-        } else {
-            1
-        }
+        C::preferred_capacity()
     }
 
     #[inline]
@@ -185,12 +260,12 @@ impl<D: Ord, T: Ord, R: Semigroup> MergeSorter<D, T, R> {
     }
 
     #[inline]
-    pub fn empty(&mut self) -> Vec<(D, T, R)> {
-        self.stash.pop().unwrap_or_else(|| Vec::with_capacity(Self::buffer_size()))
+    pub fn empty(&mut self) -> C {
+        self.stash.pop().unwrap_or_else(|| C::with_capacity(Self::buffer_size()))
     }
 
     #[inline]
-    pub fn push(&mut self, batch: &mut Vec<(D, T, R)>) {
+    pub fn push(&mut self, batch: &mut C) {
         // TODO: Reason about possible unbounded stash growth. How to / should we return them?
         // TODO: Reason about mis-sized vectors, from deserialized data; should probably drop.
         let mut batch = if self.stash.len() > 2 {
@@ -215,7 +290,7 @@ impl<D: Ord, T: Ord, R: Semigroup> MergeSorter<D, T, R> {
 
     // This is awkward, because it isn't a power-of-two length any more, and we don't want
     // to break it down to be so.
-    pub fn push_list(&mut self, list: Vec<Vec<(D, T, R)>>) {
+    pub fn push_list(&mut self, list: Vec<C>) {
         while self.queue.len() > 1 && self.queue[self.queue.len()-1].len() < list.len() {
             let list1 = self.queue_pop().unwrap();
             let list2 = self.queue_pop().unwrap();
@@ -226,7 +301,7 @@ impl<D: Ord, T: Ord, R: Semigroup> MergeSorter<D, T, R> {
     }
 
     #[inline(never)]
-    pub fn finish_into(&mut self, target: &mut Vec<Vec<(D, T, R)>>) {
+    pub fn finish_into(&mut self, target: &mut Vec<C>) {
         while self.queue.len() > 1 {
             let list1 = self.queue_pop().unwrap();
             let list2 = self.queue_pop().unwrap();
@@ -241,7 +316,7 @@ impl<D: Ord, T: Ord, R: Semigroup> MergeSorter<D, T, R> {
 
     // merges two sorted input lists into one sorted output list.
     #[inline(never)]
-    fn merge_by(&mut self, list1: Vec<Vec<(D, T, R)>>, list2: Vec<Vec<(D, T, R)>>) -> Vec<Vec<(D, T, R)>> {
+    fn merge_by(&mut self, list1: Vec<C>, list2: Vec<C>) -> Vec<C> {
         self.account(list1.iter().chain(list2.iter()).map(Vec::len), -1);
 
         use std::cmp::Ordering;
@@ -264,7 +339,7 @@ impl<D: Ord, T: Ord, R: Semigroup> MergeSorter<D, T, R> {
                 let cmp = {
                     let x = head1.front().unwrap();
                     let y = head2.front().unwrap();
-                    (&x.0, &x.1).cmp(&(&y.0, &y.1))
+                    (x.data(), x.time()).cmp(&(y.data(), y.time()))
                 };
                 match cmp {
                     Ordering::Less    => result.push(head1.pop_front().unwrap()),
@@ -318,19 +393,19 @@ impl<D: Ord, T: Ord, R: Semigroup> MergeSorter<D, T, R> {
     }
 }
 
-impl<D, T, R> MergeSorter<D, T, R> {
+impl<C: InternalContainer> MergeSorter<C> {
     /// Pop a batch from `self.queue` and account size changes.
     #[inline]
-    fn queue_pop(&mut self) -> Option<Vec<Vec<(D, T, R)>>> {
+    fn queue_pop(&mut self) -> Option<Vec<C>> {
         let batch = self.queue.pop();
-        self.account(batch.iter().flatten().map(Vec::len), -1);
+        self.account(batch.iter().flatten().map(InternalContainer::len), -1);
         batch
     }
 
     /// Push a batch to `self.queue` and account size changes.
     #[inline]
-    fn queue_push(&mut self, batch: Vec<Vec<(D, T, R)>>) {
-        self.account(batch.iter().map(Vec::len), 1);
+    fn queue_push(&mut self, batch: Vec<C>) {
+        self.account(batch.iter().map(InternalContainer::len), 1);
         self.queue.push(batch);
     }
 
@@ -355,7 +430,7 @@ impl<D, T, R> MergeSorter<D, T, R> {
     }
 }
 
-impl<D, T, R> Drop for MergeSorter<D, T, R> {
+impl<C: InternalContainer> Drop for MergeSorter<C> {
     fn drop(&mut self) {
         while self.queue_pop().is_some() { }
     }
