@@ -95,7 +95,7 @@ where
         if self.upper != upper {
             use crate::trace::Builder;
             let builder = Tr::Builder::new();
-            let batch = builder.done(self.upper.clone(), upper, Antichain::from_elem(Tr::Time::minimum()));
+            let batch = builder.done(self.upper.clone(), upper, Antichain::from_elem(Timestamp::minimum()));
             self.insert(batch, None);
         }
     }

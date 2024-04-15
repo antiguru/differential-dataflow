@@ -731,6 +731,7 @@ mod val_batch {
         <L::Target as Update>::Key: Default + HashOrdered,
         // RhhValBatch<L>: Batch<Key=<L::Target as Update>::Key, Val=<L::Target as Update>::Val, Time=<L::Target as Update>::Time, Diff=<L::Target as Update>::Diff>,
     {
+        type InputBatch = Vec<Self::Input>;
         type Input = ((<L::Target as Update>::Key, <L::Target as Update>::Val), <L::Target as Update>::Time, <L::Target as Update>::Diff);
         type Time = <L::Target as Update>::Time;
         type Output = RhhValBatch<L>;
@@ -759,6 +760,12 @@ mod val_batch {
                 },
                 singleton: None,
                 singletons: 0,
+            }
+        }
+
+        fn push_batch(&mut self, batch: &mut Self::InputBatch) {
+            for datum in batch.drain(..) {
+                self.push(datum);
             }
         }
 

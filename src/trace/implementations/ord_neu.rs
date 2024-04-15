@@ -540,6 +540,7 @@ mod val_batch {
 
     impl<L: Layout> Builder for OrdValBuilder<L> {
 
+        type InputBatch = Vec<Self::Input>;
         type Input = ((<L::Target as Update>::Key, <L::Target as Update>::Val), <L::Target as Update>::Time, <L::Target as Update>::Diff);
         type Time = <L::Target as Update>::Time;
         type Output = OrdValBatch<L>;
@@ -556,6 +557,12 @@ mod val_batch {
                 },
                 singleton: None,
                 singletons: 0,
+            }
+        }
+
+        fn push_batch(&mut self, batch: &mut Self::InputBatch) {
+            for datum in batch.drain(..) {
+                self.push(datum);
             }
         }
 
@@ -1006,6 +1013,7 @@ mod key_batch {
 
     impl<L: Layout> Builder for OrdKeyBuilder<L> {
 
+        type InputBatch = Vec<Self::Input>;
         type Input = ((<L::Target as Update>::Key, ()), <L::Target as Update>::Time, <L::Target as Update>::Diff);
         type Time = <L::Target as Update>::Time;
         type Output = OrdKeyBatch<L>;
@@ -1020,6 +1028,12 @@ mod key_batch {
                 },
                 singleton: None,
                 singletons: 0,
+            }
+        }
+
+        fn push_batch(&mut self, batch: &mut Self::InputBatch) {
+            for datum in batch.drain(..) {
+                self.push(datum);
             }
         }
 

@@ -324,6 +324,8 @@ pub trait Batcher {
 
 /// Functionality for building batches from ordered update sequences.
 pub trait Builder: Sized {
+    /// Input batch type.
+    type InputBatch;
     /// Input item type.
     type Input;
     /// Timestamp type.
@@ -340,6 +342,8 @@ pub trait Builder: Sized {
     ///
     /// They represent respectively the number of distinct `key`, `(key, val)`, and total updates.
     fn with_capacity(keys: usize, vals: usize, upds: usize) -> Self;
+    /// TODO
+    fn push_batch(&mut self, batch: &mut Self::InputBatch);
     /// Adds an element to the batch.
     ///
     /// The default implementation uses `self.copy` with references to the owned arguments.
@@ -456,10 +460,12 @@ pub mod rc_blanket_impls {
 
     /// Functionality for building batches from ordered update sequences.
     impl<B: Builder> Builder for RcBuilder<B> {
+        type InputBatch = B::InputBatch;
         type Input = B::Input;
         type Time = B::Time;
         type Output = Rc<B::Output>;
         fn with_capacity(keys: usize, vals: usize, upds: usize) -> Self { RcBuilder { builder: B::with_capacity(keys, vals, upds) } }
+        fn push_batch(&mut self, batch: &mut Self::InputBatch) { self.builder.push_batch(batch); }
         fn push(&mut self, element: Self::Input) { self.builder.push(element) }
         fn copy(&mut self, element: &Self::Input) { self.builder.copy(element) }
         fn done(self, lower: Antichain<Self::Time>, upper: Antichain<Self::Time>, since: Antichain<Self::Time>) -> Rc<B::Output> { Rc::new(self.builder.done(lower, upper, since)) }
@@ -565,10 +571,12 @@ pub mod abomonated_blanket_impls {
     where
         B::Output: Abomonation,
     {
+        type InputBatch = B::InputBatch;
         type Input = B::Input;
         type Time = B::Time;
         type Output = Abomonated<B::Output, Vec<u8>>;
         fn with_capacity(keys: usize, vals: usize, upds: usize) -> Self { AbomonatedBuilder { builder: B::with_capacity(keys, vals, upds) } }
+        fn push_batch(&mut self, batch: &mut Self::InputBatch) { self.builder.push_batch(batch); }
         fn push(&mut self, element: Self::Input) { self.builder.push(element) }
         fn copy(&mut self, element: &Self::Input) { self.builder.copy(element) }
         fn done(self, lower: Antichain<Self::Time>, upper: Antichain<Self::Time>, since: Antichain<Self::Time>) -> Self::Output {

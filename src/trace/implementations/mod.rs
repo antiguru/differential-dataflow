@@ -49,6 +49,7 @@ pub mod ord_neu;
 pub mod rhh;
 pub mod huffman_container;
 pub mod option_container;
+pub mod merge_batcher_container;
 
 // Opinionated takes on default spines.
 pub use self::ord_neu::OrdValSpine as ValSpine;
