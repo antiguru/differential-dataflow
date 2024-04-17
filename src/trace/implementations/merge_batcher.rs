@@ -1,42 +1,92 @@
 //! A general purpose `Batcher` implementation based on radix sort.
 
-use std::collections::VecDeque;
-
 use timely::communication::message::RefOrMut;
 use timely::container::PushInto;
 use timely::logging::WorkerIdentifier;
 use timely::logging_core::Logger;
 use timely::progress::{frontier::Antichain, Timestamp};
+use crate::consolidation::consolidate_updates;
 
 use crate::difference::Semigroup;
 use crate::logging::{BatcherEvent, DifferentialEvent};
 use crate::trace::{Batcher, Builder};
 
 struct VectorUpdate<D, T, R>(Vec<(D,T,R)>);
+impl<D,T,R> Default for VectorUpdate<D,T,R> {
+    fn default() -> Self {
+        Self(Vec::default())
+    }
+}
+impl<D,T,R> VectorUpdate<D,T,R> {
+    fn capacity(&self) -> usize {
+        self.0.capacity()
+    }
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
 // impl<D,T,R> PushInto<VectorUpdate<D,T,R>> for (&D, &T, &R) {
 //     fn push_into(self, target: &mut VectorUpdate<D, T, R>) {
 //         todo!()
 //     }
 // }
-impl<'a, D: Ord,T: Ord,R> PushInto<VectorUpdate<D,T,R>> for (
+impl<K,V,T,D> PushInto<VectorUpdate<(K,V),T,D>> for ((K,V),T,D) {
+    fn push_into(self, target: &mut VectorUpdate<(K, V), T, D>) {
+        target.0.push(self)
+    }
+}
+impl<K: Clone,V: Clone,T: Clone,D: Clone> PushInto<VectorUpdate<(K,V),T,D>> for &((K,V),T,D) {
+    fn push_into(self, target: &mut VectorUpdate<(K, V), T, D>) {
+        target.0.push(self.clone())
+    }
+}
+impl<'a, D: Ord,T: Ord,R:Semigroup + Clone+InternalToOwned> PushInto<VectorUpdate<D,T,R>> for (
     <<VectorUpdate<D,T,R> as InternalContainer>::Item<'a> as DataUpdate>::Data<'a>,
     <<VectorUpdate<D,T,R> as InternalContainer>::Item<'a> as DataUpdate>::Time<'a>,
     <<VectorUpdate<D,T,R> as InternalContainer>::Item<'a> as DataUpdate>::Diff<'a>
-    ) {
+) {
     fn push_into(self, target: &mut VectorUpdate<D, T, R>) {
         todo!()
     }
 }
 
-trait InternalContainer {
+struct BBOWrapper<T>(T);
+
+impl<'a, D: Ord,T: Ord,R:Semigroup + Clone+InternalToOwned> PushInto<VectorUpdate<D,T,R>> for BBOWrapper<(
+    <<VectorUpdate<D,T,R> as InternalContainer>::Item<'a> as DataUpdate>::Data<'a>,
+    <<VectorUpdate<D,T,R> as InternalContainer>::Item<'a> as DataUpdate>::Time<'a>,
+    <<<VectorUpdate<D,T,D> as InternalContainer>::Item<'a> as DataUpdate>::Diff<'a> as InternalToOwned>::Owned
+    )> {
+    fn push_into(self, target: &mut VectorUpdate<D, T, R>) {
+        todo!()
+    }
+}
+
+trait InternalContainer: Default {
     type Item<'a> where Self: 'a;
+    type DrainItem<'a> where Self: 'a;
+    type Iter<'a>: Iterator<Item=Self::Item<'a>> where Self: 'a;
+    type DrainIter<'a>: Iterator<Item=Self::DrainItem<'a>> where Self: 'a;
     fn with_capacity(capacity: usize) -> Self;
     fn preferred_capacity() -> usize;
     fn len(&self) -> usize;
+    fn capacity(&self) -> usize;
+    fn is_empty(&self) -> bool;
+    fn iter(&self) -> Self::Iter<'_>;
+    fn drain(&mut self) -> Self::DrainIter<'_>;
+    fn index(&self, index: usize) -> Self::Item<'_>;
+}
+
+trait InternalToOwned {
+    type Owned: Semigroup + 'static;
+    fn to_owned(self) -> Self::Owned;
 }
 
 impl<D,T,R> InternalContainer for VectorUpdate<D,T,R> {
     type Item<'a> = &'a (D,T,R) where Self: 'a;
+    type DrainItem<'a> = (D,T,R) where Self: 'a;
+    type Iter<'a> = std::slice::Iter<'a, (D,T,R)> where Self: 'a;
+    type DrainIter<'a> = std::vec::Drain<'a, (D,T,R)> where Self: 'a;
     fn with_capacity(capacity: usize) -> Self {
         Self(Vec::with_capacity(capacity))
     }
@@ -55,19 +105,34 @@ impl<D,T,R> InternalContainer for VectorUpdate<D,T,R> {
     fn len(&self) -> usize {
         self.0.len()
     }
+    fn iter(&self) -> Self::Iter<'_> {
+        self.0.iter()
+    }
+    fn drain(&mut self) -> Self::DrainIter<'_> {
+        self.0.drain(..)
+    }
+    fn capacity(&self) -> usize {
+        self.0.capacity()
+    }
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    fn index(&self, index: usize) -> Self::Item<'_> {
+        &self.0[index]
+    }
 }
 
 trait DataUpdate {
     type Data<'a>: Ord where Self: 'a;
     type Time<'a>: Ord where Self: 'a;
-    type Diff<'a> where Self: 'a;
+    type Diff<'a>: InternalToOwned where Self: 'a;
 
     fn data(&self) -> Self::Data<'_>;
     fn time(&self) -> Self::Time<'_>;
     fn diff(&self) -> Self::Diff<'_>;
 }
 
-impl<D: Ord, T: Ord, R> DataUpdate for &(D, T, R) {
+impl<D: Ord, T: Ord, R: Semigroup + Clone + InternalToOwned> DataUpdate for &(D, T, R) {
     type Data<'a> = &'a D where Self: 'a;
     type Time<'a> = &'a T where Self: 'a;
     type Diff<'a> = &'a R where Self: 'a;
@@ -92,18 +157,34 @@ pub struct MergeBatcher<K, V, T, D> {
     frontier: Antichain<T>,
 }
 
+impl<T: Clone + Semigroup> InternalToOwned for &T {
+    type Owned = T;
+
+    fn to_owned(self) -> Self::Owned {
+        self.clone()
+    }
+}
+
 impl<K, V, T, D> Batcher for MergeBatcher<K, V, T, D>
 where
     K: Ord + Clone + 'static,
     V: Ord + Clone + 'static,
     T: Timestamp + 'static,
-    D: Semigroup + 'static,
+    D: InternalToOwned + Semigroup + 'static,
     for<'a> <VectorUpdate<(K,V),T,D> as InternalContainer>::Item<'a>: DataUpdate,
+    for<'a> <VectorUpdate<(K,V),T,D> as InternalContainer>::Item<'a>: PushInto<VectorUpdate<(K,V),T,D>>,
+    for<'a> <<VectorUpdate<(K,V),T,D> as InternalContainer>::Item<'a> as DataUpdate>::Diff<'a>: InternalToOwned,
+    for<'a> <<<VectorUpdate<(K,V),T,D> as InternalContainer>::Item<'a> as DataUpdate>::Diff<'a> as InternalToOwned>::Owned: Semigroup,
     for<'a> (
         <<VectorUpdate<(K,V),T,D> as InternalContainer>::Item<'a> as DataUpdate>::Data<'a>,
         <<VectorUpdate<(K,V),T,D> as InternalContainer>::Item<'a> as DataUpdate>::Time<'a>,
         <<VectorUpdate<(K,V),T,D> as InternalContainer>::Item<'a> as DataUpdate>::Diff<'a>
     ): PushInto<VectorUpdate<(K,V),T,D>>,
+    for<'a> BBOWrapper<(
+        <<VectorUpdate<(K,V),T,D> as InternalContainer>::Item<'a> as DataUpdate>::Data<'a>,
+        <<VectorUpdate<(K,V),T,D> as InternalContainer>::Item<'a> as DataUpdate>::Time<'a>,
+        <<<VectorUpdate<(K,V),T,D> as InternalContainer>::Item<'a> as DataUpdate>::Diff<'a> as InternalToOwned>::Owned
+    )>: PushInto<VectorUpdate<(K,V),T,D>>,
 {
     type Input = Vec<((K,V),T,D)>;
     type Output = ((K,V),T,D);
@@ -112,7 +193,7 @@ where
 
     fn new(logger: Option<Logger<DifferentialEvent, WorkerIdentifier>>, operator_id: usize) -> Self {
         MergeBatcher {
-            sorter: MergeSorter::new(logger, operator_id),
+            sorter: <MergeSorter<VectorUpdate<(K,V),T,D>>>::new(logger, operator_id),
             frontier: Antichain::new(),
             lower: Antichain::from_elem(T::minimum()),
         }
@@ -121,18 +202,21 @@ where
     #[inline(never)]
     fn push_batch(&mut self, batch: RefOrMut<Self::Input>) {
         // `batch` is either a shared reference or an owned allocations.
-        match batch {
+        let mut vec = match batch {
             RefOrMut::Ref(reference) => {
                 // This is a moment at which we could capture the allocations backing
                 // `batch` into a different form of region, rather than just  cloning.
-                let mut owned: Vec<_> = self.sorter.empty();
+                let mut owned: Vec<_> = Vec::default();
                 owned.clone_from(reference);
-                self.sorter.push(&mut owned);
+                owned
             },
             RefOrMut::Mut(reference) => {
-                self.sorter.push(reference);
+                std::mem::take(reference)
             }
-        }
+        };
+        consolidate_updates(&mut vec);
+
+        self.sorter.push(&mut VectorUpdate(vec));
     }
 
     // Sealing a batch means finding those updates with times not greater or equal to any time
@@ -177,20 +261,20 @@ where
         };
 
         let mut kept = Vec::new();
-        let mut keep = Vec::new();
+        let mut keep = VectorUpdate::default();
 
         self.frontier.clear();
 
         // TODO: Re-use buffer, rather than dropping.
         for mut buffer in merged.drain(..) {
-            for ((key, val), time, diff) in buffer.drain(..) {
+            for ((key, val), time, diff) in buffer.drain() {
                 if upper.less_equal(&time) {
                     self.frontier.insert(time.clone());
                     if keep.len() == keep.capacity() && !keep.is_empty() {
                         kept.push(keep);
                         keep = self.sorter.empty();
                     }
-                    keep.push(((key, val), time, diff));
+                    ((key, val), time, diff).push_into(&mut keep);
                 }
                 else {
                     builder.push(((key, val), time, diff));
@@ -212,11 +296,11 @@ where
         // TODO : This isn't obviously the best policy, but "safe" wrt footprint.
         //        In particular, if we are reading serialized input data, we may
         //        prefer to keep these buffers around to re-fill, if possible.
-        let mut buffer = Vec::new();
+        let mut buffer = VectorUpdate::default();
         self.sorter.push(&mut buffer);
         // We recycle buffers with allocations (capacity, and not zero-sized).
         while buffer.capacity() > 0 && std::mem::size_of::<((K,V),T,D)>() > 0 {
-            buffer = Vec::new();
+            buffer = VectorUpdate::default();
             self.sorter.push(&mut buffer);
         }
 
@@ -242,7 +326,11 @@ struct MergeSorter<C: InternalContainer> {
 impl<C: InternalContainer> MergeSorter<C>
 where
     for<'a> C::Item<'a>: DataUpdate,
+    for<'a> C::Item<'a>: PushInto<C>,
+    for<'a> <C::Item<'a> as DataUpdate>::Diff<'a>: InternalToOwned,
+    for<'a> <<C::Item<'a> as DataUpdate>::Diff<'a> as InternalToOwned>::Owned: Semigroup,
     for<'a> (<C::Item<'a> as DataUpdate>::Data<'a>, <C::Item<'a> as DataUpdate>::Time<'a>, <C::Item<'a> as DataUpdate>::Diff<'a>): PushInto<C>,
+    for<'a> BBOWrapper<(<C::Item<'a> as DataUpdate>::Data<'a>, <C::Item<'a> as DataUpdate>::Time<'a>, <<C::Item<'a> as DataUpdate>::Diff<'a> as InternalToOwned>::Owned)>: PushInto<C>,
 {
 
     fn buffer_size() -> usize {
@@ -276,7 +364,7 @@ where
         };
 
         if !batch.is_empty() {
-            crate::consolidation::consolidate_updates(&mut batch);
+            // crate::consolidation::consolidate_updates(&mut batch);
             self.account([batch.len()], 1);
             self.queue_push(vec![batch]);
             while self.queue.len() > 1 && (self.queue[self.queue.len()-1].len() >= self.queue[self.queue.len()-2].len() / 2) {
@@ -317,7 +405,7 @@ where
     // merges two sorted input lists into one sorted output list.
     #[inline(never)]
     fn merge_by(&mut self, list1: Vec<C>, list2: Vec<C>) -> Vec<C> {
-        self.account(list1.iter().chain(list2.iter()).map(Vec::len), -1);
+        self.account(list1.iter().chain(list2.iter()).map(InternalContainer::len), -1);
 
         use std::cmp::Ordering;
 
@@ -328,8 +416,8 @@ where
         let mut list1 = list1.into_iter();
         let mut list2 = list2.into_iter();
 
-        let mut head1 = VecDeque::from(list1.next().unwrap_or_default());
-        let mut head2 = VecDeque::from(list2.next().unwrap_or_default());
+        let mut head1 = StackQueue::from(list1.next().unwrap_or_default());
+        let mut head2 = StackQueue::from(list2.next().unwrap_or_default());
 
         // while we have valid data in each input, merge.
         while !head1.is_empty() && !head2.is_empty() {
@@ -337,19 +425,21 @@ where
             while (result.capacity() - result.len()) > 0 && !head1.is_empty() && !head2.is_empty() {
 
                 let cmp = {
-                    let x = head1.front().unwrap();
-                    let y = head2.front().unwrap();
+                    let x = head1.peek();
+                    let y = head2.peek();
                     (x.data(), x.time()).cmp(&(y.data(), y.time()))
                 };
                 match cmp {
-                    Ordering::Less    => result.push(head1.pop_front().unwrap()),
-                    Ordering::Greater => result.push(head2.pop_front().unwrap()),
+                    Ordering::Less    => head1.pop().push_into(&mut result),
+                    Ordering::Greater => head2.pop().push_into(&mut result),
                     Ordering::Equal   => {
-                        let (data1, time1, mut diff1) = head1.pop_front().unwrap();
-                        let (_data2, _time2, diff2) = head2.pop_front().unwrap();
-                        diff1.plus_equals(&diff2);
+                        let item1 = head1.pop();
+                        let item2 = head2.pop();
+                        let mut diff1 = item1.diff().to_owned();
+                        // TODO: Remove `to_owned`!
+                        diff1.plus_equals(&item2.diff().to_owned());
                         if !diff1.is_zero() {
-                            result.push((data1, time1, diff1));
+                            (item1.diff(), item1.time(), diff1).push_into(&mut result);
                         }
                     }
                 }
@@ -361,14 +451,14 @@ where
             }
 
             if head1.is_empty() {
-                let done1 = Vec::from(head1);
+                let done1 = head1.done();
                 if done1.capacity() == Self::buffer_size() { self.stash.push(done1); }
-                head1 = VecDeque::from(list1.next().unwrap_or_default());
+                head1 = StackQueue::from(list1.next().unwrap_or_default());
             }
             if head2.is_empty() {
-                let done2 = Vec::from(head2);
+                let done2 = head2.done();
                 if done2.capacity() == Self::buffer_size() { self.stash.push(done2); }
-                head2 = VecDeque::from(list2.next().unwrap_or_default());
+                head2 = StackQueue::from(list2.next().unwrap_or_default());
             }
         }
 
@@ -377,14 +467,14 @@ where
 
         if !head1.is_empty() {
             let mut result = self.empty();
-            for item1 in head1 { result.push(item1); }
+            for item1 in head1.iter() { item1.push_into(&mut result); }
             output.push(result);
         }
         output.extend(list1);
 
         if !head2.is_empty() {
             let mut result = self.empty();
-            for item2 in head2 { result.push(item2); }
+            for item2 in head2.iter() { item2.push_into(&mut result); }
             output.push(result);
         }
         output.extend(list2);
@@ -433,5 +523,46 @@ impl<C: InternalContainer> MergeSorter<C> {
 impl<C: InternalContainer> Drop for MergeSorter<C> {
     fn drop(&mut self) {
         while self.queue_pop().is_some() { }
+    }
+}
+
+struct StackQueue<C> {
+    list: C,
+    head: usize,
+}
+
+impl<C: Default + InternalContainer> Default for StackQueue<C> {
+    fn default() -> Self {
+        Self::from(C::default())
+    }
+}
+
+impl<C: InternalContainer> StackQueue<C> {
+
+    fn pop(&mut self) -> C::Item<'_> {
+        self.head += 1;
+        self.list.index(self.head - 1)
+    }
+
+    fn peek(&self) -> C::Item<'_> {
+        self.list.index(self.head)
+    }
+
+    fn from(list: C) -> Self {
+        StackQueue {
+            list,
+            head: 0,
+        }
+    }
+
+    fn done(self) -> C {
+        self.list
+    }
+
+    fn is_empty(&self) -> bool { self.head == self.list.len() }
+
+    /// Return an iterator over the remaining elements.
+    fn iter(&self) -> impl Iterator<Item=C::Item<'_>> {
+        InternalContainer::iter(&self.list).take(self.head)
     }
 }

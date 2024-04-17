@@ -13,7 +13,6 @@ pub mod implementations;
 pub mod wrappers;
 
 use timely::communication::message::RefOrMut;
-use timely::Container;
 use timely::logging::WorkerIdentifier;
 use timely::logging_core::Logger;
 use timely::progress::{Antichain, frontier::AntichainRef};
@@ -23,7 +22,6 @@ use crate::logging::DifferentialEvent;
 use crate::trace::cursor::MyTrait;
 use crate::difference::Semigroup;
 use crate::lattice::Lattice;
-use crate::trace::implementations::UpdateLayout;
 // use ::difference::Semigroup;
 pub use self::cursor::Cursor;
 pub use self::description::Description;
@@ -382,7 +380,6 @@ pub trait Merger<Output: Batch> {
 
 /// Blanket implementations for reference counted batches.
 pub mod rc_blanket_impls {
-    use std::marker::PhantomData;
     use std::rc::Rc;
 
     use timely::progress::{Antichain, frontier::AntichainRef};

@@ -67,7 +67,6 @@ mod val_batch {
 
     use std::marker::PhantomData;
     use abomonation_derive::Abomonation;
-    use timely::Container;
     use timely::progress::{Antichain, frontier::AntichainRef};
 
     use crate::trace::{Batch, BatchReader, Builder, Cursor, Description, Merger};
@@ -642,11 +641,10 @@ mod key_batch {
 
     use std::marker::PhantomData;
     use abomonation_derive::Abomonation;
-    use timely::Container;
     use timely::progress::{Antichain, frontier::AntichainRef};
 
     use crate::trace::{Batch, BatchReader, Builder, Cursor, Description, Merger};
-    use crate::trace::implementations::{BatchContainer, UpdateLayout};
+    use crate::trace::implementations::{BatchContainer};
     use crate::trace::cursor::MyTrait;
 
     use super::{Layout, Update};
