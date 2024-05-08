@@ -131,14 +131,14 @@ pub fn arrange_from_upsert<G, V, F, Tr>(
     from: F,
 ) -> Arranged<G, TraceAgent<Tr>>
 where
-    G: Scope<Timestamp=Tr::Time>,
-    Tr: Trace+TraceReader<Diff=isize>+'static,
+    G: Scope<Timestamp=Tr::TimeOwned>,
+    Tr: Trace+TraceReader<DiffOwned=isize>+'static,
     Tr::KeyOwned: ExchangeData+Hashable+std::hash::Hash,
     V: ExchangeData,
     F: Fn(Tr::Val<'_>) -> V + 'static,
-    Tr::Time: TotalOrder+ExchangeData,
+    Tr::TimeOwned: TotalOrder+ExchangeData,
     Tr::Batch: Batch,
-    Tr::Builder: Builder<Input = ((Tr::KeyOwned, V), Tr::Time, Tr::Diff)>,
+    Tr::Builder: Builder<Input = ((Tr::KeyOwned, V), Tr::TimeOwned, Tr::DiffOwned)>,
 {
     let mut reader: Option<TraceAgent<Tr>> = None;
 
@@ -255,7 +255,7 @@ where
                                         // Determine the prior value associated with the key.
                                         while let Some(val) = trace_cursor.get_val(&trace_storage) {
                                             let mut count = 0;
-                                            trace_cursor.map_times(&trace_storage, |_time, diff| count += *diff);
+                                            trace_cursor.map_times(&trace_storage, |_time, diff| count += diff.into_owned());
                                             assert!(count == 0 || count == 1);
                                             if count == 1 {
                                                 assert!(prev_value.is_none());

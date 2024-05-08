@@ -135,7 +135,8 @@ mod val_batch {
         /// The length of this list is one longer than `vals`, so that we can avoid bounds logic.
         pub vals_offs: L::OffsetContainer,
         /// Concatenated ordered lists of updates, bracketed by offsets in `vals_offs`.
-        pub updates: L::UpdContainer,
+        pub times: L::TimeContainer,
+        pub diffs: L::DiffContainer,
     }
 
     impl<L: Layout> RhhValStorage<L> 
@@ -256,8 +257,10 @@ mod val_batch {
         type Key<'a> = <L::KeyContainer as BatchContainer>::ReadItem<'a>;
         type KeyOwned = <L::Target as Update>::Key;
         type Val<'a> = <L::ValContainer as BatchContainer>::ReadItem<'a>;
-        type Time = <L::Target as Update>::Time;
-        type Diff = <L::Target as Update>::Diff;
+        type Time<'a> = <L::TimeContainer as BatchContainer>::ReadItem<'a>;
+        type TimeOwned = <L::Target as Update>::Time;
+        type Diff<'a> = <L::DiffContainer as BatchContainer>::ReadItem<'a>;
+        type DiffOwned = <L::Target as Update>::Diff;
 
         type Cursor = RhhValCursor<L>;
         fn cursor(&self) -> Self::Cursor { 

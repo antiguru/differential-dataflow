@@ -34,7 +34,7 @@ use crate::trace::cursor::Cursor;
 /// module-level documentation.
 pub fn freeze<G, T, F>(arranged: &Arranged<G, T>, func: F) -> Arranged<G, TraceFreeze<T, F>>
 where
-    G: Scope<Timestamp=T::Time>,
+    G: Scope<Timestamp=T::TimeOwned>,
     T: TraceReader+Clone,
     F: Fn(&G::Timestamp)->Option<G::Timestamp>+'static,
 {
@@ -50,7 +50,7 @@ where
 pub struct TraceFreeze<Tr, F>
 where
     Tr: TraceReader,
-    F: Fn(&Tr::Time)->Option<Tr::Time>,
+    F: Fn(&Tr::TimeOwned)->Option<Tr::TimeOwned>,
 {
     trace: Tr,
     func: Rc<F>,
@@ -59,7 +59,7 @@ where
 impl<Tr,F> Clone for TraceFreeze<Tr, F>
 where
     Tr: TraceReader+Clone,
-    F: Fn(&Tr::Time)->Option<Tr::Time>,
+    F: Fn(&Tr::TimeOwned)->Option<Tr::TimeOwned>,
 {
     fn clone(&self) -> Self {
         TraceFreeze {
@@ -73,13 +73,15 @@ impl<Tr, F> TraceReader for TraceFreeze<Tr, F>
 where
     Tr: TraceReader,
     Tr::Batch: Clone,
-    F: Fn(&Tr::Time)->Option<Tr::Time>+'static,
+    F: Fn(&Tr::TimeOwned)->Option<Tr::TimeOwned>+'static,
 {
     type Key<'a> = Tr::Key<'a>;
     type KeyOwned = Tr::KeyOwned;
     type Val<'a> = Tr::Val<'a>;
-    type Time = Tr::Time;
-    type Diff = Tr::Diff;
+    type Time<'a> = Tr::Time<'a>;
+    type TimeOwned = Tr::TimeOwned;
+    type Diff<'a> = Tr::Diff<'a>;
+    type DiffOwned = Tr::DiffOwned;
 
     type Batch = BatchFreeze<Tr::Batch, F>;
     type Storage = Tr::Storage;
@@ -92,13 +94,13 @@ where
         })
     }
 
-    fn set_logical_compaction(&mut self, frontier: AntichainRef<Tr::Time>) { self.trace.set_logical_compaction(frontier) }
-    fn get_logical_compaction(&mut self) -> AntichainRef<Tr::Time> { self.trace.get_logical_compaction() }
+    fn set_logical_compaction(&mut self, frontier: AntichainRef<Tr::TimeOwned>) { self.trace.set_logical_compaction(frontier) }
+    fn get_logical_compaction(&mut self) -> AntichainRef<Tr::TimeOwned> { self.trace.get_logical_compaction() }
 
-    fn set_physical_compaction(&mut self, frontier: AntichainRef<Tr::Time>) { self.trace.set_physical_compaction(frontier) }
-    fn get_physical_compaction(&mut self) -> AntichainRef<Tr::Time> { self.trace.get_physical_compaction() }
+    fn set_physical_compaction(&mut self, frontier: AntichainRef<Tr::TimeOwned>) { self.trace.set_physical_compaction(frontier) }
+    fn get_physical_compaction(&mut self) -> AntichainRef<Tr::TimeOwned> { self.trace.get_physical_compaction() }
 
-    fn cursor_through(&mut self, upper: AntichainRef<Tr::Time>) -> Option<(Self::Cursor, Self::Storage)> {
+    fn cursor_through(&mut self, upper: AntichainRef<Tr::TimeOwned>) -> Option<(Self::Cursor, Self::Storage)> {
         let func = &self.func;
         self.trace.cursor_through(upper)
             .map(|(cursor, storage)| (CursorFreeze::new(cursor, func.clone()), storage))
@@ -109,7 +111,7 @@ impl<Tr, F> TraceFreeze<Tr, F>
 where
     Tr: TraceReader,
     Tr::Batch: Clone,
-    F: Fn(&Tr::Time)->Option<Tr::Time>,
+    F: Fn(&Tr::TimeOwned)->Option<Tr::TimeOwned>,
 {
     /// Makes a new trace wrapper
     pub fn make_from(trace: Tr, func: Rc<F>) -> Self {
@@ -136,13 +138,15 @@ impl<B: Clone, F> Clone for BatchFreeze<B, F> {
 impl<B, F> BatchReader for BatchFreeze<B, F>
 where
     B: BatchReader,
-    F: Fn(&B::Time)->Option<B::Time>,
+    F: Fn(&B::TimeOwned)->Option<B::TimeOwned>,
 {
     type Key<'a> = B::Key<'a>;
     type KeyOwned = B::KeyOwned;
     type Val<'a> = B::Val<'a>;
-    type Time = B::Time;
-    type Diff = B::Diff;
+    type Time<'a> = B::Time<'a>;
+    type TimeOwned = B::TimeOwned;
+    type Diff<'a> = B::Diff<'a>;
+    type DiffOwned = B::DiffOwned;
 
     type Cursor = BatchCursorFreeze<B::Cursor, F>;
 
@@ -150,13 +154,13 @@ where
         BatchCursorFreeze::new(self.batch.cursor(), self.func.clone())
     }
     fn len(&self) -> usize { self.batch.len() }
-    fn description(&self) -> &Description<B::Time> { self.batch.description() }
+    fn description(&self) -> &Description<B::TimeOwned> { self.batch.description() }
 }
 
 impl<B, F> BatchFreeze<B, F>
 where
     B: BatchReader,
-    F: Fn(&B::Time)->Option<B::Time>
+    F: Fn(&B::TimeOwned)->Option<B::TimeOwned>
 {
     /// Makes a new batch wrapper
     pub fn make_from(batch: B, func: Rc<F>) -> Self {
@@ -179,13 +183,15 @@ impl<C, F> CursorFreeze<C, F> {
 impl<C, F> Cursor for CursorFreeze<C, F>
 where
     C: Cursor,
-    F: Fn(&C::Time)->Option<C::Time>,
+    F: Fn(&C::TimeOwned)->Option<C::TimeOwned>,
 {
     type Key<'a> = C::Key<'a>;
     type KeyOwned = C::KeyOwned;
     type Val<'a> = C::Val<'a>;
-    type Time = C::Time;
-    type Diff = C::Diff;
+    type Time<'a> = C::Time<'a>;
+    type TimeOwned = C::TimeOwned;
+    type Diff<'a> = C::Diff<'a>;
+    type DiffOwned = C::DiffOwned;
 
     type Storage = C::Storage;
 
@@ -195,7 +201,7 @@ where
     #[inline] fn key<'a>(&self, storage: &'a Self::Storage) -> Self::Key<'a> { self.cursor.key(storage) }
     #[inline] fn val<'a>(&self, storage: &'a Self::Storage) -> Self::Val<'a> { self.cursor.val(storage) }
 
-    #[inline] fn map_times<L: FnMut(&Self::Time, &Self::Diff)>(&mut self, storage: &Self::Storage, mut logic: L) {
+    #[inline] fn map_times<L: FnMut(&Self::TimeOwned, Self::Diff<'_>)>(&mut self, storage: &Self::Storage, mut logic: L) {
         let func = &self.func;
         self.cursor.map_times(storage, |time, diff| {
             if let Some(time) = func(time) {
@@ -230,13 +236,15 @@ impl<C, F> BatchCursorFreeze<C, F> {
 // impl<C: Cursor<Storage=B, Time=B::Time>, B: BatchReader<Cursor=C>, F> Cursor for BatchCursorFreeze<B, F>
 impl<C: Cursor, F> Cursor for BatchCursorFreeze<C, F>
 where
-    F: Fn(&C::Time)->Option<C::Time>,
+    F: Fn(&C::TimeOwned)->Option<C::TimeOwned>,
 {
     type Key<'a> = C::Key<'a>;
     type KeyOwned = C::KeyOwned;
     type Val<'a> = C::Val<'a>;
-    type Time = C::Time;
-    type Diff = C::Diff;
+    type Time<'a> = C::Time<'a>;
+    type TimeOwned = C::TimeOwned;
+    type Diff<'a> = C::Diff<'a>;
+    type DiffOwned = C::DiffOwned;
 
     type Storage = BatchFreeze<C::Storage, F>;
 
@@ -246,7 +254,7 @@ where
     #[inline] fn key<'a>(&self, storage: &'a Self::Storage) -> Self::Key<'a> { self.cursor.key(&storage.batch) }
     #[inline] fn val<'a>(&self, storage: &'a Self::Storage) -> Self::Val<'a> { self.cursor.val(&storage.batch) }
 
-    #[inline] fn map_times<L: FnMut(&Self::Time, &Self::Diff)>(&mut self, storage: &Self::Storage, mut logic: L) {
+    #[inline] fn map_times<L: FnMut(&Self::TimeOwned, Self::Diff<'_>)>(&mut self, storage: &Self::Storage, mut logic: L) {
         let func = &self.func;
         self.cursor.map_times(&storage.batch, |time, diff| {
             if let Some(time) = func(time) {

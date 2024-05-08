@@ -24,6 +24,7 @@ use crate::lattice::Lattice;
 use crate::operators::arrange::{Arranged, ArrangeByKey, ArrangeBySelf};
 use crate::trace::{BatchReader, Cursor};
 use crate::operators::ValueHistory;
+use crate::trace::cursor::MyTrait;
 
 use crate::trace::TraceReader;
 
@@ -165,31 +166,31 @@ where
     }
 }
 
-impl<G, K, V, Tr> Join<G, K, V, Tr::Diff> for Arranged<G, Tr>
+impl<G, K, V, Tr> Join<G, K, V, Tr::DiffOwned> for Arranged<G, Tr>
 where
-    G: Scope<Timestamp=Tr::Time>,
+    G: Scope<Timestamp=Tr::TimeOwned>,
     Tr: for<'a> TraceReader<Key<'a> = &'a K, Val<'a> = &'a V>+Clone+'static,
     K: ExchangeData+Hashable,
     V: Data + 'static,
 {
-    fn join_map<V2: ExchangeData, R2: ExchangeData+Semigroup, D: Data, L>(&self, other: &Collection<G, (K, V2), R2>, mut logic: L) -> Collection<G, D, <Tr::Diff as Multiply<R2>>::Output>
+    fn join_map<V2: ExchangeData, R2: ExchangeData+Semigroup, D: Data, L>(&self, other: &Collection<G, (K, V2), R2>, mut logic: L) -> Collection<G, D, <Tr::DiffOwned as Multiply<R2>>::Output>
     where 
-        Tr::Diff: Multiply<R2>,
-        <Tr::Diff as Multiply<R2>>::Output: Semigroup,
+        Tr::DiffOwned: Multiply<R2>,
+        <Tr::DiffOwned as Multiply<R2>>::Output: Semigroup,
         L: for<'a> FnMut(Tr::Key<'a>, Tr::Val<'a>, &V2)->D+'static,
     {
         let arranged2 = other.arrange_by_key();
         self.join_core(&arranged2, move |k,v1,v2| Some(logic(k,v1,v2)))
     }
 
-    fn semijoin<R2: ExchangeData+Semigroup>(&self, other: &Collection<G, K, R2>) -> Collection<G, (K, V), <Tr::Diff as Multiply<R2>>::Output>
-    where Tr::Diff: Multiply<R2>, <Tr::Diff as Multiply<R2>>::Output: Semigroup {
+    fn semijoin<R2: ExchangeData+Semigroup>(&self, other: &Collection<G, K, R2>) -> Collection<G, (K, V), <Tr::DiffOwned as Multiply<R2>>::Output>
+    where Tr::DiffOwned: Multiply<R2>, <Tr::DiffOwned as Multiply<R2>>::Output: Semigroup {
         let arranged2 = other.arrange_by_self();
         self.join_core(&arranged2, |k,v,_| Some((k.clone(), v.clone())))
     }
 
-    fn antijoin<R2: ExchangeData+Semigroup>(&self, other: &Collection<G, K, R2>) -> Collection<G, (K, V), Tr::Diff>
-    where Tr::Diff: Multiply<R2, Output=Tr::Diff>, Tr::Diff: Abelian {
+    fn antijoin<R2: ExchangeData+Semigroup>(&self, other: &Collection<G, K, R2>) -> Collection<G, (K, V), Tr::DiffOwned>
+    where Tr::DiffOwned: Multiply<R2, Output=Tr::DiffOwned>, Tr::DiffOwned: Abelian {
         self.as_collection(|k,v| (k.clone(), v.clone()))
             .concat(&self.semijoin(other).negate())
     }
@@ -232,11 +233,11 @@ pub trait JoinCore<G: Scope, K: 'static + ?Sized, V: 'static + ?Sized, R: Semigr
     ///      .assert_eq(&z);
     /// });
     /// ```
-    fn join_core<Tr2,I,L> (&self, stream2: &Arranged<G,Tr2>, result: L) -> Collection<G,I::Item,<R as Multiply<Tr2::Diff>>::Output>
+    fn join_core<Tr2,I,L> (&self, stream2: &Arranged<G,Tr2>, result: L) -> Collection<G,I::Item,<R as Multiply<Tr2::DiffOwned>>::Output>
     where
-        Tr2: for<'a> TraceReader<Key<'a>=&'a K, Time=G::Timestamp>+Clone+'static,
-        R: Multiply<Tr2::Diff>,
-        <R as Multiply<Tr2::Diff>>::Output: Semigroup,
+        Tr2: for<'a> TraceReader<Key<'a>=&'a K, TimeOwned=G::Timestamp>+Clone+'static,
+        R: Multiply<Tr2::DiffOwned>,
+        <R as Multiply<Tr2::DiffOwned>>::Output: Semigroup,
         I: IntoIterator,
         I::Item: Data,
         L: FnMut(&K,&V,Tr2::Val<'_>)->I+'static,
@@ -277,11 +278,11 @@ pub trait JoinCore<G: Scope, K: 'static + ?Sized, V: 'static + ?Sized, R: Semigr
     /// ```
     fn join_core_internal_unsafe<Tr2,I,L,D,ROut> (&self, stream2: &Arranged<G,Tr2>, result: L) -> Collection<G,D,ROut>
     where
-        Tr2: for<'a> TraceReader<Key<'a>=&'a K, Time=G::Timestamp>+Clone+'static,
+        Tr2: for<'a> TraceReader<Key<'a>=&'a K, TimeOwned=G::Timestamp>+Clone+'static,
         D: Data,
         ROut: Semigroup,
         I: IntoIterator<Item=(D, G::Timestamp, ROut)>,
-        L: for<'a> FnMut(&K,&V,Tr2::Val<'_>,&G::Timestamp,&R,&Tr2::Diff)->I+'static,
+        L: for<'a> FnMut(&K,&V,Tr2::Val<'_>,&G::Timestamp,&R,&Tr2::DiffOwned)->I+'static,
         ;
 }
 
@@ -294,11 +295,11 @@ where
     R: ExchangeData+Semigroup,
     G::Timestamp: Lattice+Ord,
 {
-    fn join_core<Tr2,I,L> (&self, stream2: &Arranged<G,Tr2>, result: L) -> Collection<G,I::Item,<R as Multiply<Tr2::Diff>>::Output>
+    fn join_core<Tr2,I,L> (&self, stream2: &Arranged<G,Tr2>, result: L) -> Collection<G,I::Item,<R as Multiply<Tr2::DiffOwned>>::Output>
     where
-        Tr2: for<'a> TraceReader<Key<'a>=&'a K, Time=G::Timestamp>+Clone+'static,
-        R: Multiply<Tr2::Diff>,
-        <R as Multiply<Tr2::Diff>>::Output: Semigroup,
+        Tr2: for<'a> TraceReader<Key<'a>=&'a K, TimeOwned=G::Timestamp>+Clone+'static,
+        R: Multiply<Tr2::DiffOwned>,
+        <R as Multiply<Tr2::DiffOwned>>::Output: Semigroup,
         I: IntoIterator,
         I::Item: Data,
         L: FnMut(&K,&V,Tr2::Val<'_>)->I+'static,
@@ -309,9 +310,9 @@ where
 
     fn join_core_internal_unsafe<Tr2,I,L,D,ROut> (&self, stream2: &Arranged<G,Tr2>, result: L) -> Collection<G,D,ROut>
     where
-        Tr2: for<'a> TraceReader<Key<'a>=&'a K, Time=G::Timestamp>+Clone+'static,
+        Tr2: for<'a> TraceReader<Key<'a>=&'a K, TimeOwned=G::Timestamp>+Clone+'static,
         I: IntoIterator<Item=(D, G::Timestamp, ROut)>,
-        L: FnMut(&K,&V,Tr2::Val<'_>,&G::Timestamp,&R,&Tr2::Diff)->I+'static,
+        L: FnMut(&K,&V,Tr2::Val<'_>,&G::Timestamp,&R,&Tr2::DiffOwned)->I+'static,
         D: Data,
         ROut: Semigroup,
     {
@@ -369,10 +370,10 @@ impl<CB: ContainerBuilder> ContainerBuilder for EffortBuilder<CB> {
 /// [`AsCollection`]: crate::collection::AsCollection
 pub fn join_traces<G, T1, T2, L, CB>(arranged1: &Arranged<G,T1>, arranged2: &Arranged<G,T2>, mut result: L) -> StreamCore<G, CB::Container>
 where
-    G: Scope<Timestamp=T1::Time>,
+    G: Scope<Timestamp=T1::TimeOwned>,
     T1: TraceReader+Clone+'static,
-    T2: for<'a> TraceReader<Key<'a>=T1::Key<'a>, Time=T1::Time>+Clone+'static,
-    L: FnMut(T1::Key<'_>,T1::Val<'_>,T2::Val<'_>,&G::Timestamp,&T1::Diff,&T2::Diff,&mut JoinSession<T1::Time, CB, CB::Container>)+'static,
+    T2: for<'a> TraceReader<Key<'a>=T1::Key<'a>, TimeOwned=T1::TimeOwned, Time<'a>=T1::Time<'a>>+Clone+'static,
+    L: FnMut(T1::Key<'_>,T1::Val<'_>,T2::Val<'_>,&G::Timestamp,&T1::DiffOwned,&T2::DiffOwned,&mut JoinSession<T1::TimeOwned, CB, CB::Container>)+'static,
     CB: ContainerBuilder + 'static,
 {
     // Rename traces for symmetry from here on out.
@@ -618,8 +619,9 @@ where
 struct Deferred<T, C1, C2>
 where
     T: Timestamp+Lattice+Ord,
-    C1: Cursor<Time=T>,
-    C2: for<'a> Cursor<Key<'a>=C1::Key<'a>, Time=T>,
+    C1: Cursor,
+    for<'a> C1::Time<'a>: MyTrait<'a, Owned=T>,
+    C2: for<'a> Cursor<Key<'a>=C1::Key<'a>, Time<'a>=C1::Time<'a>>,
 {
     trace: C1,
     trace_storage: C1::Storage,
@@ -631,9 +633,9 @@ where
 
 impl<T, C1, C2> Deferred<T, C1, C2>
 where
-    C1: Cursor<Time=T>,
-    C2: for<'a> Cursor<Key<'a>=C1::Key<'a>, Time=T>,
     T: Timestamp+Lattice+Ord,
+    C1: Cursor<TimeOwned=T>,
+    C2: for<'a> Cursor<Key<'a>=C1::Key<'a>, TimeOwned=C1::TimeOwned, Time<'a>=C1::Time<'a>>,
 {
     fn new(trace: C1, trace_storage: C1::Storage, batch: C2, batch_storage: C2::Storage, capability: Capability<T>) -> Self {
         Deferred {
@@ -654,7 +656,7 @@ where
     #[inline(never)]
     fn work<L, CB: ContainerBuilder>(&mut self, output: &mut OutputHandleCore<T, EffortBuilder<CB>, Tee<T, CB::Container>>, mut logic: L, fuel: &mut usize)
     where
-        L: for<'a> FnMut(C1::Key<'a>, C1::Val<'a>, C2::Val<'a>, &T, &C1::Diff, &C2::Diff, &mut JoinSession<T, CB, CB::Container>),
+        L: for<'a> FnMut(C1::Key<'a>, C1::Val<'a>, C2::Val<'a>, &T, &C1::DiffOwned, &C2::DiffOwned, &mut JoinSession<T, CB, CB::Container>),
     {
 
         let meet = self.capability.time();
@@ -707,7 +709,7 @@ where
 struct JoinThinker<'a, C1, C2>
 where
     C1: Cursor,
-    C2: Cursor<Time = C1::Time>,
+    C2: Cursor<TimeOwned = C1::TimeOwned>,
 {
     pub history1: ValueHistory<'a, C1>,
     pub history2: ValueHistory<'a, C2>,
@@ -716,7 +718,7 @@ where
 impl<'a, C1, C2> JoinThinker<'a, C1, C2>
 where
     C1: Cursor,
-    C2: Cursor<Time = C1::Time>,
+    C2: Cursor<TimeOwned = C1::TimeOwned>,
 {
     fn new() -> Self {
         JoinThinker {
@@ -725,7 +727,7 @@ where
         }
     }
 
-    fn think<F: FnMut(C1::Val<'a>,C2::Val<'a>,C1::Time,&C1::Diff,&C2::Diff)>(&mut self, mut results: F) {
+    fn think<F: FnMut(C1::Val<'a>,C2::Val<'a>,C1::TimeOwned,&C1::DiffOwned,&C2::DiffOwned)>(&mut self, mut results: F) {
 
         // for reasonably sized edits, do the dead-simple thing.
         if self.history1.edits.len() < 10 || self.history2.edits.len() < 10 {

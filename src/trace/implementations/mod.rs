@@ -43,7 +43,7 @@ pub mod spine_fueled;
 pub mod merge_batcher;
 pub mod merge_batcher_col;
 pub mod ord_neu;
-pub mod rhh;
+// pub mod rhh;
 pub mod huffman_container;
 pub mod option_container;
 
@@ -94,8 +94,12 @@ pub trait Layout {
     type ValContainer:
         BatchContainer<PushItem=<Self::Target as Update>::Val>;
     /// Container for update vals.
-    type UpdContainer:
-        for<'a> BatchContainer<PushItem=(<Self::Target as Update>::Time, <Self::Target as Update>::Diff), ReadItem<'a> = &'a (<Self::Target as Update>::Time, <Self::Target as Update>::Diff)>;
+    type TimeContainer:
+        BatchContainer<PushItem=<Self::Target as Update>::Time>;
+    type DiffContainer:
+        BatchContainer<PushItem=<Self::Target as Update>::Diff>;
+    // type UpdContainer:
+    //     for<'a> BatchContainer<PushItem=(<Self::Target as Update>::Time, <Self::Target as Update>::Diff), ReadItem<'a> = &'a (<Self::Target as Update>::Time, <Self::Target as Update>::Diff)>;
     /// Container for offsets.
     type OffsetContainer: BatchContainer<PushItem=usize>;
 }
@@ -113,7 +117,8 @@ where
     type Target = U;
     type KeyContainer = Vec<U::Key>;
     type ValContainer = Vec<U::Val>;
-    type UpdContainer = Vec<(U::Time, U::Diff)>;
+    type TimeContainer = Vec<U::Time>;
+    type DiffContainer = Vec<U::Diff>;
     type OffsetContainer = OffsetList;
 }
 
@@ -132,7 +137,8 @@ where
     type Target = U;
     type KeyContainer = TimelyStack<U::Key>;
     type ValContainer = TimelyStack<U::Val>;
-    type UpdContainer = TimelyStack<(U::Time, U::Diff)>;
+    type TimeContainer = TimelyStack<U::Time>;
+    type DiffContainer = TimelyStack<U::Diff>;
     type OffsetContainer = OffsetList;
 }
 
@@ -153,8 +159,8 @@ impl<T: Ord + Clone + 'static> PreferredContainer for [T] {
 }
 
 /// An update and layout description based on preferred containers.
-pub struct Preferred<K: ?Sized, V: ?Sized, T, D> {
-    phantom: std::marker::PhantomData<(Box<K>, Box<V>, T, D)>,
+pub struct Preferred<K: ?Sized, V: ?Sized, T: ?Sized, D: ?Sized> {
+    phantom: std::marker::PhantomData<(Box<K>, Box<V>, Box<T>, Box<D>)>,
 }
 
 impl<K,V,T,R> Update for Preferred<K, V, T, R>
@@ -163,13 +169,15 @@ where
     K::Owned: Ord+Clone+'static,
     V: ToOwned + ?Sized + 'static,
     V::Owned: Ord+Clone,
-    T: Ord+Lattice+timely::progress::Timestamp+Clone,
-    R: Semigroup+Clone,
+    T: ToOwned + ?Sized,
+    T::Owned: Ord+Lattice+timely::progress::Timestamp+Clone,
+    R: ToOwned + ?Sized,
+    R::Owned: Semigroup+Clone,
 {
     type Key = K::Owned;
     type Val = V::Owned;
-    type Time = T;
-    type Diff = R;
+    type Time = T::Owned;
+    type Diff = R::Owned;
 }
 
 impl<K, V, T, D> Layout for Preferred<K, V, T, D>
@@ -179,13 +187,16 @@ where
     // for<'a> K::Container: BatchContainer<ReadItem<'a> = &'a K>,
     V: Ord+ToOwned+PreferredContainer + ?Sized + 'static,
     V::Owned: Ord+Clone,
-    T: Ord+Lattice+timely::progress::Timestamp+Clone,
-    D: Semigroup+Clone,
+    T: Ord+ToOwned+Lattice+timely::progress::Timestamp+PreferredContainer,
+    T::Owned: Ord+Lattice+timely::progress::Timestamp+Clone+'static,
+    D: Semigroup+ToOwned+Clone+PreferredContainer,
+    D::Owned: Semigroup+Clone+'static,
 {
     type Target = Preferred<K, V, T, D>;
     type KeyContainer = K::Container;
     type ValContainer = V::Container;
-    type UpdContainer = Vec<(T, D)>;
+    type TimeContainer = T::Container;
+    type DiffContainer = D::Container;
     type OffsetContainer = OffsetList;
 }
 

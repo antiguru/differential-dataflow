@@ -15,6 +15,7 @@ use crate::hashable::Hashable;
 use crate::collection::AsCollection;
 use crate::operators::arrange::{Arranged, ArrangeBySelf};
 use crate::trace::{BatchReader, Cursor, TraceReader};
+use crate::trace::cursor::MyTrait;
 
 /// Extension trait for the `distinct` differential dataflow method.
 pub trait ThresholdTotal<G: Scope, K: ExchangeData, R: ExchangeData+Semigroup> where G::Timestamp: TotalOrder+Lattice+Ord {
@@ -92,18 +93,18 @@ where G::Timestamp: TotalOrder+Lattice+Ord {
     }
 }
 
-impl<G, K, T1> ThresholdTotal<G, K, T1::Diff> for Arranged<G, T1>
+impl<G, K, T1> ThresholdTotal<G, K, T1::DiffOwned> for Arranged<G, T1>
 where
-    G: Scope<Timestamp=T1::Time>,
+    G: Scope<Timestamp=T1::TimeOwned>,
     T1: for<'a> TraceReader<Key<'a>=&'a K, Val<'a>=&'a ()>+Clone+'static,
     K: ExchangeData,
-    T1::Time: TotalOrder,
-    T1::Diff: ExchangeData,
+    T1::TimeOwned: TotalOrder,
+    T1::DiffOwned: ExchangeData,
 {
     fn threshold_semigroup<R2, F>(&self, mut thresh: F) -> Collection<G, K, R2>
     where
         R2: Semigroup,
-        F: for<'a> FnMut(T1::Key<'a>,&T1::Diff,Option<&T1::Diff>)->Option<R2>+'static,
+        F: for<'a> FnMut(T1::Key<'a>,&T1::DiffOwned,Option<&T1::DiffOwned>)->Option<R2>+'static,
     {
 
         let mut trace = self.trace.clone();
@@ -125,22 +126,30 @@ where
                         let (mut trace_cursor, trace_storage) = trace.cursor_through(batch.lower().borrow()).unwrap();
 
                         upper_limit.clone_from(batch.upper());
+                        let mut temp: Option<T1::DiffOwned> = None;
 
                         while let Some(key) = batch_cursor.get_key(&batch) {
-                            let mut count: Option<T1::Diff> = None;
+                            let mut count: Option<T1::DiffOwned> = None;
 
                             // Compute the multiplicity of this key before the current batch.
                             trace_cursor.seek_key(&trace_storage, key);
                             if trace_cursor.get_key(&trace_storage) == Some(key) {
                                 trace_cursor.map_times(&trace_storage, |_, diff| {
-                                    count.as_mut().map(|c| c.plus_equals(diff));
-                                    if count.is_none() { count = Some(diff.clone()); }
+                                    // TODO: `into_owned` for an ephemeral allocation.
+                                    count.as_mut().map(|c| c.plus_equals(&diff.into_owned()));
+                                    if count.is_none() { count = Some(diff.into_owned()); }
                                 });
                             }
 
                             // Apply `thresh` both before and after `diff` is applied to `count`.
                             // If the result is non-zero, send it along.
                             batch_cursor.map_times(&batch, |time, diff| {
+                                let diff = if let Some(temp) = temp.as_mut() {
+                                    diff.clone_onto(temp);
+                                    &*temp
+                                } else {
+                                    temp.insert(diff.into_owned())
+                                };
 
                                 let difference =
                                 match &count {
