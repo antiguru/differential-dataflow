@@ -114,7 +114,7 @@ mod val_batch {
     #[derive(Abomonation)]
     pub struct RhhValStorage<L: Layout> 
     where 
-        <L::Target as Update>::Key: Default + HashOrdered,
+        <L::KeyContainer as BatchContainer>::Owned: Default + HashOrdered,
     {
 
         /// The requested capacity for `keys`. We use this when determining where a key with a certain hash
@@ -152,7 +152,7 @@ mod val_batch {
 
     impl<L: Layout> RhhValStorage<L> 
     where 
-        <L::Target as Update>::Key: Default + HashOrdered,
+        <L::Target as BatchContainer>::Key: Default + HashOrdered,
         for<'a> <L::KeyContainer as BatchContainer>::ReadItem<'a>: HashOrdered,
     {
         /// Lower and upper bounds in `self.vals` corresponding to the key at `index`.
@@ -192,7 +192,7 @@ mod val_batch {
             while self.keys.len() < desired {
                 // We insert a default (dummy) key and repeat the offset to indicate this.
                 let current_offset = self.keys_offs.index(self.keys.len());
-                self.keys.push(<<L::Target as Update>::Key as Default>::default());
+                self.keys.push(<<L::Target as BatchContainer>::Key as Default>::default());
                 self.keys_offs.push(current_offset);
             }
 
@@ -253,12 +253,12 @@ mod val_batch {
     #[derive(Abomonation)]
     pub struct RhhValBatch<L: Layout> 
     where 
-        <L::Target as Update>::Key: Default + HashOrdered,
+        <L::Target as BatchContainer>::Key: Default + HashOrdered,
     {
         /// The updates themselves.
         pub storage: RhhValStorage<L>,
         /// Description of the update times this layer represents.
-        pub description: Description<<L::Target as Update>::Time>,
+        pub description: Description<<L::TimeContainer as BatchContainer>::Owned>,
         /// The number of updates reflected in the batch.
         ///
         /// We track this separately from `storage` because due to the singleton optimization,
@@ -269,14 +269,14 @@ mod val_batch {
 
     impl<L: Layout> BatchReader for RhhValBatch<L> 
     where 
-        <L::Target as Update>::Key: Default + HashOrdered,
+        <L::Target as BatchContainer>::Key: Default + HashOrdered,
         for<'a> <L::KeyContainer as BatchContainer>::ReadItem<'a>: HashOrdered,
     {
         type Key<'a> = <L::KeyContainer as BatchContainer>::ReadItem<'a>;
         type Val<'a> = <L::ValContainer as BatchContainer>::ReadItem<'a>;
-        type Time = <L::Target as Update>::Time;
+        type Time = <L::Target as BatchContainer>::Time;
         type TimeGat<'a> = <L::TimeContainer as BatchContainer>::ReadItem<'a>;
-        type Diff = <L::Target as Update>::Diff;
+        type Diff = <L::Target as BatchContainer>::Diff;
         type DiffGat<'a> = <L::DiffContainer as BatchContainer>::ReadItem<'a>;
 
         type Cursor = RhhValCursor<L>;
@@ -294,17 +294,17 @@ mod val_batch {
             // Perhaps we should count such exceptions to the side, to provide a correct accounting.
             self.updates
         }
-        fn description(&self) -> &Description<<L::Target as Update>::Time> { &self.description }
+        fn description(&self) -> &Description<<L::Target as BatchContainer>::Time> { &self.description }
     }
 
     impl<L: Layout> Batch for RhhValBatch<L> 
     where 
-        <L::Target as Update>::Key: Default + HashOrdered,
+        <L::Target as BatchContainer>::Key: Default + HashOrdered,
         for<'a> <L::KeyContainer as BatchContainer>::ReadItem<'a>: HashOrdered,
     {
         type Merger = RhhValMerger<L>;
 
-        fn begin_merge(&self, other: &Self, compaction_frontier: AntichainRef<<L::Target as Update>::Time>) -> Self::Merger {
+        fn begin_merge(&self, other: &Self, compaction_frontier: AntichainRef<<L::Target as BatchContainer>::Time>) -> Self::Merger {
             RhhValMerger::new(self, other, compaction_frontier)
         }
     }
@@ -312,7 +312,7 @@ mod val_batch {
     /// State for an in-progress merge.
     pub struct RhhValMerger<L: Layout> 
     where 
-        <L::Target as Update>::Key: Default + HashOrdered,
+        <L::Target as BatchContainer>::Key: Default + HashOrdered,
     {
         /// Key position to merge next in the first batch.
         key_cursor1: usize,
@@ -321,24 +321,24 @@ mod val_batch {
         /// result that we are currently assembling.
         result: RhhValStorage<L>,
         /// description
-        description: Description<<L::Target as Update>::Time>,
+        description: Description<<L::TimeContainer as BatchContainer>::Owned>,
 
         /// Local stash of updates, to use for consolidation.
         ///
         /// We could emulate a `ChangeBatch` here, with related compaction smarts.
         /// A `ChangeBatch` itself needs an `i64` diff type, which we have not.
-        update_stash: Vec<(<L::Target as Update>::Time, <L::Target as Update>::Diff)>,
+        update_stash: Vec<(<L::Target as BatchContainer>::Time, <L::Target as BatchContainer>::Diff)>,
         /// Counts the number of singleton-optimized entries, that we may correctly count the updates.
         singletons: usize,
     }
 
     impl<L: Layout> Merger<RhhValBatch<L>> for RhhValMerger<L>
     where
-        <L::Target as Update>::Key: Default + HashOrdered,
-        RhhValBatch<L>: Batch<Time=<L::Target as Update>::Time>,
+        <L::Target as BatchContainer>::Key: Default + HashOrdered,
+        RhhValBatch<L>: Batch<Time=<L::Target as BatchContainer>::Time>,
         for<'a> <L::KeyContainer as BatchContainer>::ReadItem<'a>: HashOrdered,
     {
-        fn new(batch1: &RhhValBatch<L>, batch2: &RhhValBatch<L>, compaction_frontier: AntichainRef<<L::Target as Update>::Time>) -> Self {
+        fn new(batch1: &RhhValBatch<L>, batch2: &RhhValBatch<L>, compaction_frontier: AntichainRef<<L::Target as BatchContainer>::Time>) -> Self {
 
             assert!(batch1.upper() == batch2.lower());
             use crate::lattice::Lattice;
@@ -429,7 +429,7 @@ mod val_batch {
     // Helper methods in support of merging batches.
     impl<L: Layout> RhhValMerger<L> 
     where 
-        <L::Target as Update>::Key: Default + HashOrdered,
+        <L::Target as BatchContainer>::Key: Default + HashOrdered,
         for<'a> <L::KeyContainer as BatchContainer>::ReadItem<'a>: HashOrdered,
     {
         /// Copy the next key in `source`.
@@ -615,7 +615,7 @@ mod val_batch {
     /// the cursor, rather than internal state.
     pub struct RhhValCursor<L: Layout> 
     where 
-        <L::Target as Update>::Key: Default + HashOrdered,
+        <L::Target as BatchContainer>::Key: Default + HashOrdered,
     {
         /// Absolute position of the current key.
         key_cursor: usize,
@@ -627,14 +627,14 @@ mod val_batch {
 
     impl<L: Layout> Cursor for RhhValCursor<L> 
     where 
-        <L::Target as Update>::Key: Default + HashOrdered,
+        <L::Target as BatchContainer>::Key: Default + HashOrdered,
         for<'a> <L::KeyContainer as BatchContainer>::ReadItem<'a>: HashOrdered,
     {
         type Key<'a> = <L::KeyContainer as BatchContainer>::ReadItem<'a>;
         type Val<'a> = <L::ValContainer as BatchContainer>::ReadItem<'a>;
-        type Time = <L::Target as Update>::Time;
+        type Time = <L::Target as BatchContainer>::Time;
         type TimeGat<'a> = <L::TimeContainer as BatchContainer>::ReadItem<'a>;
-        type Diff = <L::Target as Update>::Diff;
+        type Diff = <L::Target as BatchContainer>::Diff;
         type DiffGat<'a> = <L::DiffContainer as BatchContainer>::ReadItem<'a>;
 
         type Storage = RhhValBatch<L>;
@@ -710,10 +710,10 @@ mod val_batch {
     /// A builder for creating layers from unsorted update tuples.
     pub struct RhhValBuilder<L: Layout, CI>
     where 
-        <L::Target as Update>::Key: Default + HashOrdered,
+        <L::Target as BatchContainer>::Key: Default + HashOrdered,
     {
         result: RhhValStorage<L>,
-        singleton: Option<(<L::Target as Update>::Time, <L::Target as Update>::Diff)>,
+        singleton: Option<(<L::Target as BatchContainer>::Time, <L::Target as BatchContainer>::Diff)>,
         /// Counts the number of singleton optimizations we performed.
         ///
         /// This number allows us to correctly gauge the total number of updates reflected in a batch,
@@ -724,7 +724,7 @@ mod val_batch {
 
     impl<L: Layout, CI> RhhValBuilder<L, CI>
     where 
-        <L::Target as Update>::Key: Default + HashOrdered,
+        <L::Target as BatchContainer>::Key: Default + HashOrdered,
     {
         /// Pushes a single update, which may set `self.singleton` rather than push.
         ///
@@ -737,7 +737,7 @@ mod val_batch {
         /// previously pushed update exactly. In that case, we do not push the update into `updates`.
         /// The update tuple is retained in `self.singleton` in case we see another update and need
         /// to recover the singleton to push it into `updates` to join the second update.
-        fn push_update(&mut self, time: <L::Target as Update>::Time, diff: <L::Target as Update>::Diff) {
+        fn push_update(&mut self, time: <L::Target as BatchContainer>::Time, diff: <L::Target as BatchContainer>::Diff) {
             // If a just-pushed update exactly equals `(time, diff)` we can avoid pushing it.
             let t1 = <<L::TimeContainer as BatchContainer>::ReadItem<'_> as IntoOwned>::borrow_as(&time);
             let d1 = <<L::DiffContainer as BatchContainer>::ReadItem<'_> as IntoOwned>::borrow_as(&diff);
@@ -759,13 +759,14 @@ mod val_batch {
 
     impl<L: Layout, CI> Builder for RhhValBuilder<L, CI>
     where
-        <L::Target as Update>::Key: Default + HashOrdered,
-        CI: for<'a> BuilderInput<L::KeyContainer, L::ValContainer, Key<'a> = <L::Target as Update>::Key, Time=<L::Target as Update>::Time, Diff=<L::Target as Update>::Diff>,
-        for<'a> L::ValContainer: PushInto<CI::Val<'a>>,
+        <L::Target as BatchContainer>::Key: Default + HashOrdered,
+        CI: 'static,
+        CI: for<'a> BuilderInput<L::KeyContainer, L::ValContainer, KeyGat<'a> = <L::Target as Update>::KeyGat<'a>, Time=<L::Target as Update>::Time, Diff=<L::Target as Update>::Diff>,
+        for<'a> L::ValContainer: PushInto<<L::Target as Update>::ValGat<'a>>,
         for<'a> <L::KeyContainer as BatchContainer>::ReadItem<'a>: HashOrdered + IntoOwned<'a, Owned = <L::Target as Update>::Key>,
     {
         type Input = CI;
-        type Time = <L::Target as Update>::Time;
+        type Time = <L::Target as BatchContainer>::Time;
         type Output = RhhValBatch<L>;
 
         fn with_capacity(keys: usize, vals: usize, upds: usize) -> Self {

@@ -44,7 +44,7 @@ pub mod merge_batcher;
 pub mod merge_batcher_col;
 pub mod merge_batcher_flat;
 pub mod ord_neu;
-pub mod rhh;
+// pub mod rhh;
 pub mod huffman_container;
 pub mod chunker;
 
@@ -75,13 +75,13 @@ pub trait Update {
     /// A whole update as GAT.
     type ItemRef<'a> where Self: 'a;
     /// The key of the update
-    type KeyGat<'a>: Copy + Ord + IntoOwned<'a, Owned = Self::Key> where Self: 'a;
+    type KeyGat<'a>: Ord where Self: 'a;
     /// The value of the update
-    type ValGat<'a>: Copy + Ord + IntoOwned<'a, Owned = Self::Val> where Self: 'a;
+    type ValGat<'a>: Ord where Self: 'a;
     /// The time of the update
-    type TimeGat<'a>: Copy + Ord + IntoOwned<'a, Owned = Self::Time> where Self: 'a;
+    type TimeGat<'a>: Ord where Self: 'a;
     /// The diff of the update
-    type DiffGat<'a>: Copy + IntoOwned<'a, Owned = Self::Diff> where Self: 'a;
+    type DiffGat<'a> where Self: 'a;
 
     /// Split a read item into its constituents. Must be cheap.
     fn into_parts<'a>(item: Self::ItemRef<'a>) -> (Self::KeyGat<'a>, Self::ValGat<'a>, Self::TimeGat<'a>, Self::DiffGat<'a>);
@@ -101,6 +101,11 @@ pub trait Update {
     /// Converts a diff into one with a narrower lifetime.
     #[must_use]
     fn reborrow_diff<'b, 'a: 'b>(item: Self::DiffGat<'a>) -> Self::DiffGat<'b> where Self: 'a;
+
+    /// TODO
+    fn time_to_owned(time: Self::TimeGat<'_>) -> Self::Time;
+    /// TODO
+    fn diff_to_owned(time: Self::DiffGat<'_>) -> Self::Diff;
 }
 
 impl<K,V,T,R> Update for ((K, V), T, R)
@@ -114,11 +119,11 @@ where
     type Val = V;
     type Time = T;
     type Diff = R;
-    type ItemRef<'a> = &'a ((K, V), T, R);
-    type KeyGat<'a> = &'a K where Self: 'a;
-    type ValGat<'a> = &'a V where Self: 'a;
-    type TimeGat<'a> = &'a T where Self: 'a;
-    type DiffGat<'a> = &'a R where Self: 'a;
+    type ItemRef<'a> = ((K, V), T, R);
+    type KeyGat<'a> = K where Self: 'a;
+    type ValGat<'a> = V where Self: 'a;
+    type TimeGat<'a> = T where Self: 'a;
+    type DiffGat<'a> = R where Self: 'a;
 
     fn into_parts<'a>(((key, val), time, diff): Self::ItemRef<'a>) -> (Self::KeyGat<'a>, Self::ValGat<'a>, Self::TimeGat<'a>, Self::DiffGat<'a>) {
         (key, val, time, diff)
@@ -131,21 +136,32 @@ where
     fn reborrow_time<'b, 'a: 'b>(item: Self::TimeGat<'a>) -> Self::TimeGat<'b> where Self: 'a { item }
 
     fn reborrow_diff<'b, 'a: 'b>(item: Self::DiffGat<'a>) -> Self::DiffGat<'b> where Self: 'a { item }
+
+    fn time_to_owned(time: Self::TimeGat<'_>) -> Self::Time { time }
+    fn diff_to_owned(time: Self::DiffGat<'_>) -> Self::Diff { time }
 }
 
 /// A type with opinions on how updates should be laid out.
 pub trait Layout {
     /// The represented update.
-    type Target: Update + ?Sized;
+    // type Target: Update + ?Sized;
+    /// TODO
+    type Key: 'static;
     /// Container for update keys.
     // NB: The `PushInto` constraint is only required by `rhh.rs` to push default values.
-    type KeyContainer: BatchContainer + PushInto<<Self::Target as Update>::Key>;
+    type KeyContainer: BatchContainer<Owned=Self::Key> + PushInto<Self::Key>;
+    /// TODO
+    type Val: 'static;
     /// Container for update vals.
-    type ValContainer: BatchContainer;
+    type ValContainer: BatchContainer<Owned=Self::Val> + PushInto<Self::Val>;
+    /// TODO
+    type Time: Lattice + Timestamp + 'static;
     /// Container for times.
-    type TimeContainer: BatchContainer<Owned = <Self::Target as Update>::Time> + PushInto<<Self::Target as Update>::Time>;
+    type TimeContainer: BatchContainer<Owned=Self::Time> + PushInto<Self::Time>;
+    /// TODO
+    type Diff: Semigroup + 'static;
     /// Container for diffs.
-    type DiffContainer: BatchContainer<Owned = <Self::Target as Update>::Diff> + PushInto<<Self::Target as Update>::Diff>;
+    type DiffContainer: BatchContainer<Owned=Self::Diff> + PushInto<Self::Diff>;
     /// Container for offsets.
     type OffsetContainer: for<'a> BatchContainer<ReadItem<'a> = usize>;
 }
@@ -159,10 +175,14 @@ impl<U: Update> Layout for Vector<U>
 where
     U::Diff: Ord,
 {
-    type Target = U;
+    // type Target = U;
+    type Key = U::Key;
     type KeyContainer = Vec<U::Key>;
+    type Val = U::Val;
     type ValContainer = Vec<U::Val>;
+    type Time = U::Time;
     type TimeContainer = Vec<U::Time>;
+    type Diff = U::Diff;
     type DiffContainer = Vec<U::Diff>;
     type OffsetContainer = OffsetList;
 }
@@ -179,10 +199,14 @@ where
     U::Time: Columnation,
     U::Diff: Columnation + Ord,
 {
-    type Target = U;
+    // type Target = U;
+    type Key = U::Key;
     type KeyContainer = TimelyStack<U::Key>;
+    type Val = U::Val;
     type ValContainer = TimelyStack<U::Val>;
+    type Time = U::Time;
     type TimeContainer = TimelyStack<U::Time>;
+    type Diff = U::Diff;
     type DiffContainer = TimelyStack<U::Diff>;
     type OffsetContainer = OffsetList;
 }
@@ -195,7 +219,7 @@ type FlatLayout<K, V, T, R> = TupleABCRegion<TupleABRegion<K, V>, T, R>;
 /// Examples include types that implement `Clone` who prefer
 pub trait PreferredContainer : ToOwned {
     /// The preferred container for the type.
-    type Container: BatchContainer + PushInto<Self::Owned>;
+    type Container: BatchContainer<Owned=Self::Owned> + PushInto<Self::Owned>;
 }
 
 impl<T: Ord + Clone + 'static> PreferredContainer for T {
@@ -213,11 +237,11 @@ pub struct Preferred<K: ?Sized, V: ?Sized, T, D> {
 
 impl<K,V,T,R> Update for Preferred<K, V, T, R>
 where
-    K: ToOwned + ?Sized + Ord,
+    K: ToOwned + ?Sized + Ord + 'static,
     K::Owned: Ord+Clone+'static,
-    V: ToOwned + ?Sized + Ord,
+    V: ToOwned + ?Sized + Ord + 'static,
     V::Owned: Ord+Clone+'static,
-    T: Ord+Clone+Lattice+timely::progress::Timestamp,
+    T: Ord+Clone+Lattice+timely::progress::Timestamp + 'static,
     R: Ord+Clone+Semigroup+'static,
 {
     type Key = K::Owned;
@@ -241,6 +265,9 @@ where
     fn reborrow_time<'b, 'a: 'b>(item: Self::TimeGat<'a>) -> Self::TimeGat<'b> where Self: 'a { item }
 
     fn reborrow_diff<'b, 'a: 'b>(item: Self::DiffGat<'a>) -> Self::DiffGat<'b> where Self: 'a { item }
+
+    fn time_to_owned(time: Self::TimeGat<'_>) -> Self::Time { time.into_owned() }
+    fn diff_to_owned(diff: Self::DiffGat<'_>) -> Self::Diff { diff.into_owned() }
 }
 
 impl<K, V, T, D> Layout for Preferred<K, V, T, D>
@@ -252,10 +279,14 @@ where
     T: Ord+Clone+Lattice+timely::progress::Timestamp,
     D: Ord+Clone+Semigroup+'static,
 {
-    type Target = Preferred<K, V, T, D>;
+    // type Target = Preferred<K, V, T, D>;
+    type Key = K::Owned;
     type KeyContainer = K::Container;
+    type Val = V::Owned;
     type ValContainer = V::Container;
+    type Time = T;
     type TimeContainer = Vec<T>;
+    type Diff = D;
     type DiffContainer = Vec<D>;
     type OffsetContainer = OffsetList;
 }
@@ -385,27 +416,15 @@ impl BatchContainer for OffsetList {
 }
 
 /// Behavior to split an update into principal components.
-pub trait BuilderInput<K: BatchContainer, V: BatchContainer>: Container {
-    /// Key portion
-    type Key<'a>: Ord;
-    /// Value portion
-    type Val<'a>: Ord;
-    /// Time
-    type Time;
-    /// Diff
-    type Diff;
-
-    /// Split an item into separate parts.
-    fn into_parts<'a>(item: Self::Item<'a>) -> (Self::Key<'a>, Self::Val<'a>, Self::Time, Self::Diff);
-
+pub trait BuilderInput<K: BatchContainer, V: BatchContainer>: Update {
     /// Test that the key equals a key in the layout's key container.
-    fn key_eq(this: &Self::Key<'_>, other: K::ReadItem<'_>) -> bool;
+    fn key_eq(this: &Self::KeyGat<'_>, other: K::ReadItem<'_>) -> bool;
 
     /// Test that the value equals a key in the layout's value container.
-    fn val_eq(this: &Self::Val<'_>, other: V::ReadItem<'_>) -> bool;
+    fn val_eq(this: &Self::ValGat<'_>, other: V::ReadItem<'_>) -> bool;
 }
 
-impl<K,KBC,V,VBC,T,R> BuilderInput<KBC, VBC> for Vec<((K, V), T, R)>
+impl<K,KBC,V,VBC,T,R> BuilderInput<KBC, VBC> for ((K, V), T, R)
 where
     K: Ord + Clone + 'static,
     KBC: BatchContainer,
@@ -416,50 +435,12 @@ where
     T: Timestamp + Lattice + Clone + 'static,
     R: Ord + Semigroup + 'static,
 {
-    type Key<'a> = K;
-    type Val<'a> = V;
-    type Time = T;
-    type Diff = R;
-
-    fn into_parts<'a>(((key, val), time, diff): Self::Item<'a>) -> (Self::Key<'a>, Self::Val<'a>, Self::Time, Self::Diff) {
-        (key, val, time, diff)
-    }
-
     fn key_eq(this: &K, other: KBC::ReadItem<'_>) -> bool {
-        KBC::reborrow(other) == this
+        KBC::reborrow(other).eq(&this)
     }
 
     fn val_eq(this: &V, other: VBC::ReadItem<'_>) -> bool {
-        VBC::reborrow(other) == this
-    }
-}
-
-impl<K,V,T,R> BuilderInput<K, V> for TimelyStack<((K::Owned, V::Owned), T, R)>
-where
-    K: BatchContainer,
-    for<'a> K::ReadItem<'a>: PartialEq<&'a K::Owned>,
-    K::Owned: Ord + Columnation + Clone + 'static,
-    V: BatchContainer,
-    for<'a> V::ReadItem<'a>: PartialEq<&'a V::Owned>,
-    V::Owned: Ord + Columnation + Clone + 'static,
-    T: Timestamp + Lattice + Columnation + Clone + 'static,
-    R: Ord + Clone + Semigroup + Columnation + 'static,
-{
-    type Key<'a> = &'a K::Owned;
-    type Val<'a> = &'a V::Owned;
-    type Time = T;
-    type Diff = R;
-
-    fn into_parts<'a>(((key, val), time, diff): Self::Item<'a>) -> (Self::Key<'a>, Self::Val<'a>, Self::Time, Self::Diff) {
-        (key, val, time.clone(), diff.clone())
-    }
-
-    fn key_eq(this: &&K::Owned, other: K::ReadItem<'_>) -> bool {
-        K::reborrow(other) == *this
-    }
-
-    fn val_eq(this: &&V::Owned, other: V::ReadItem<'_>) -> bool {
-        V::reborrow(other) == *this
+        VBC::reborrow(other).eq(&this)
     }
 }
 
@@ -486,38 +467,34 @@ mod flatcontainer {
         for<'a> T::ReadItem<'a>: Copy + Ord,
         for<'a> R::ReadItem<'a>: Copy + Ord,
     {
-        type Target = Self;
+        // type Target = Self;
+        type Key = <K as Region>::Owned;
         type KeyContainer = FlatStack<K>;
+        type Val = <V as Region>::Owned;
         type ValContainer = FlatStack<V>;
+        type Time = <T as Region>::Owned;
         type TimeContainer = FlatStack<T>;
+        type Diff = <R as Region>::Owned;
         type DiffContainer = FlatStack<R>;
         type OffsetContainer = OffsetList;
     }
 
-    impl<KBC,VBC,MC> BuilderInput<KBC, VBC> for FlatStack<MC>
+    impl<KBC,VBC,KR,VR,TR,RR> BuilderInput<KBC, VBC> for FlatLayout<KR,VR,TR,RR>
     where
-        MC: for<'a> Update<ItemRef<'a>=<MC as Region>::ReadItem<'a>> + Region + Clone + 'static,
         KBC: BatchContainer,
         VBC: BatchContainer,
-        for<'a> KBC::ReadItem<'a>: PartialEq<MC::KeyGat<'a>>,
-        for<'a> VBC::ReadItem<'a>: PartialEq<MC::ValGat<'a>>,
+        FlatLayout<KR,VR,TR,RR>: Update,
+        for<'a> KBC::ReadItem<'a>: PartialEq<<Self as Update>::KeyGat<'a>>,
+        for<'a> VBC::ReadItem<'a>: PartialEq<<Self as Update>::ValGat<'a>>,
+        for<'a> <Self as Update>::KeyGat<'a>: Copy,
+        for<'a> <Self as Update>::ValGat<'a>: Copy,
     {
-        type Key<'a> = MC::KeyGat<'a>;
-        type Val<'a> = MC::ValGat<'a>;
-        type Time = MC::Time;
-        type Diff = MC::Diff;
-
-        fn into_parts<'a>(item: Self::Item<'a>) -> (Self::Key<'a>, Self::Val<'a>, Self::Time, Self::Diff) {
-            let (key, val, time, diff) = MC::into_parts(item);
-            (key, val, time.into_owned(), diff.into_owned())
+        fn key_eq(this: &Self::KeyGat<'_>, other: KBC::ReadItem<'_>) -> bool {
+            KBC::reborrow(other) == <Self as Update>::reborrow_key(*this)
         }
 
-        fn key_eq(this: &Self::Key<'_>, other: KBC::ReadItem<'_>) -> bool {
-            KBC::reborrow(other) == MC::reborrow_key(*this)
-        }
-
-        fn val_eq(this: &Self::Val<'_>, other: VBC::ReadItem<'_>) -> bool {
-            VBC::reborrow(other) == MC::reborrow_val(*this)
+        fn val_eq(this: &Self::ValGat<'_>, other: VBC::ReadItem<'_>) -> bool {
+            VBC::reborrow(other) == <Self as Update>::reborrow_val(*this)
         }
     }
 }

@@ -59,13 +59,13 @@ impl<MC: Region> FlatcontainerMerger<MC> {
 
 impl<K,V,T,R> Update for TupleABCRegion<TupleABRegion<K, V>, T, R>
 where
-    K: Region,
+    K: Region + 'static,
     K::Owned: Clone + Ord + 'static,
-    V: Region,
+    V: Region + 'static,
     V::Owned: Clone + Ord + 'static,
-    T: Region,
+    T: Region + 'static,
     T::Owned: Clone + Ord + Timestamp + Lattice + 'static,
-    R: Region,
+    R: Region + 'static,
     R::Owned: Clone + Ord + Semigroup + 'static,
     for<'a> K::ReadItem<'a>: Copy + Ord,
     for<'a> V::ReadItem<'a>: Copy + Ord,
@@ -94,6 +94,9 @@ where
     fn reborrow_time<'b, 'a: 'b>(item: Self::TimeGat<'a>) -> Self::TimeGat<'b> where Self: 'a { T::reborrow(item) }
 
     fn reborrow_diff<'b, 'a: 'b>(item: Self::DiffGat<'a>) -> Self::DiffGat<'b> where Self: 'a { R::reborrow(item) }
+
+    fn time_to_owned(time: Self::TimeGat<'_>) -> Self::Time { time.into_owned() }
+    fn diff_to_owned(diff: Self::DiffGat<'_>) -> Self::Diff { diff.into_owned() }
 }
 
 impl<MC> Merger for FlatcontainerMerger<MC>

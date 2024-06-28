@@ -288,6 +288,7 @@ where
         + for<'a> Push<((MC::KeyGat<'a>, MC::ValGat<'a>), MC::TimeGat<'a>, MC::Diff)>
         + 'static,
     for<'a> MC::Diff: Semigroup<MC::DiffGat<'a>>,
+    for<'a> MC::DiffGat<'a>: IntoOwned<'a, Owned=MC::Diff>,
     for<'a> MC::ReadItem<'a>: Copy,
 {
     type Key<'a> = (MC::KeyGat<'a>, MC::ValGat<'a>, MC::TimeGat<'a>) where Self: 'a;
