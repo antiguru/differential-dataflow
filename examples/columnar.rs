@@ -209,7 +209,8 @@ mod container {
                 Self::Align(_) => true,
             }
         }
-        fn ensure_capacity(&mut self, _stash: &mut Option<Self>) { }
+        fn ensure_capacity_with(&mut self, _refill: impl FnOnce() -> Option<Self>) {
+        }
     }
 
     use timely::container::PushInto;
