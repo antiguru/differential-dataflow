@@ -4,11 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bytemuck = { default-features = false, version = "1.21.0" }
+columnar = { workspace = true }
 columnation = "0.1.0"
 differential-dataflow = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 timely = { workspace = true }
-
-[dev-dependencies]
-bytemuck = { default-features = false, version = "1.21.0" }
-columnar = { workspace = true }

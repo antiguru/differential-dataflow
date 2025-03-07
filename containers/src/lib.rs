@@ -14,6 +14,7 @@ use crate::columnation::{ColMerger, ColumnationChunker, TimelyStack};
 pub mod columnation;
 pub mod huffman_container;
 pub mod rhh;
+pub mod columnar;
 
 /// A trace implementation backed by columnar storage.
 pub type PreferredSpine<K, V, T, R> = Spine<Rc<OrdValBatch<Preferred<K,V,T,R>>>>;
