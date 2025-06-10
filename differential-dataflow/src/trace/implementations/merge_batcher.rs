@@ -51,7 +51,6 @@ impl<Input, C, M> Batcher for MergeBatcher<Input, C, M>
 where
     C: ContainerBuilder<Container=M::Chunk> + Default + for<'a> PushInto<&'a mut Input>,
     M: Merger,
-    M::Time: Timestamp,
 {
     type Input = Input;
     type Time = M::Time;
@@ -75,10 +74,12 @@ where
     /// needed.
     fn push_container(&mut self, container: &mut Input) {
         self.chunker.push_into(container);
-        while let Some(chunk) = self.chunker.extract() {
+        let mut chain = Vec::new();
+        while let Some(chunk) = self.chunker.finish() {
             let chunk = std::mem::take(chunk);
-            self.insert_chain(vec![chunk]);
+            chain.push(chunk);
         }
+        self.insert_chain(chain);
     }
 
     // Sealing a batch means finding those updates with times not greater or equal to any time
@@ -121,7 +122,7 @@ where
     }
 
     /// The frontier of elements remaining after the most recent call to `self.seal`.
-    #[inline]
+    #[inline(always)]
     fn frontier(&mut self) -> AntichainRef<M::Time> {
         self.frontier.borrow()
     }
@@ -209,7 +210,7 @@ pub trait Merger: Default {
     /// The internal representation of chunks of data.
     type Chunk: Container;
     /// The type of time in frontiers to extract updates.
-    type Time;
+    type Time: Timestamp;
     /// Merge chains into an output chain.
     fn merge(&mut self, list1: Vec<Self::Chunk>, list2: Vec<Self::Chunk>, output: &mut Vec<Self::Chunk>, stash: &mut Vec<Self::Chunk>);
     /// Extract ready updates based on the `upper` frontier.
@@ -245,10 +246,12 @@ pub mod container {
 
     use std::cmp::Ordering;
     use std::marker::PhantomData;
+    use ::columnation::Columnation;
     use timely::{Container, container::{PushInto, SizableContainer}};
     use timely::progress::frontier::{Antichain, AntichainRef};
     use timely::{Data, PartialOrder};
-
+    use timely::container::{CapacityContainerBuilder, ContainerBuilder};
+    use timely::progress::Timestamp;
     use crate::trace::implementations::merge_batcher::Merger;
 
     /// An abstraction for a container that can be iterated over, and conclude by returning itself.
@@ -269,23 +272,12 @@ pub mod container {
         ///
         /// This type is provided so that users can maintain antichains of something, in order to track
         /// the forward movement of time and extract intervals from chains of updates.
-        type TimeOwned;
-        /// The owned diff type.
-        ///
-        /// This type is provided so that users can provide an owned instance to the `push_and_add` method,
-        /// to act as a scratch space when the type is substantial and could otherwise require allocations.
-        type DiffOwned: Default;
+        type TimeOwned: Timestamp;
 
         /// Relates a borrowed time to antichains of owned times.
         ///
         /// If `upper` is less or equal to `time`, the method returns `true` and ensures that `frontier` reflects `time`.
-        fn time_kept(time1: &Self::Item<'_>, upper: &AntichainRef<Self::TimeOwned>, frontier: &mut Antichain<Self::TimeOwned>) -> bool;
-
-        /// Push an entry that adds together two diffs.
-        ///
-        /// This is only called when two items are deemed mergeable by the container queue.
-        /// If the two diffs added together is zero do not push anything.
-        fn push_and_add<'a>(&mut self, item1: Self::Item<'a>, item2: Self::Item<'a>, stash: &mut Self::DiffOwned);
+        fn time_kept(time1: &Self::Item<'_>, upper: &AntichainRef<Self::TimeOwned>, frontier: &mut Antichain<Self::TimeOwned>, stash: &mut Self::TimeOwned) -> bool;
 
         /// Account the allocations behind the chunk.
         // TODO: Find a more universal home for this: `Container`?
@@ -295,47 +287,189 @@ pub mod container {
         }
     }
 
+    /// TODO
+    pub trait PushAndAdd: ContainerBuilder {
+        /// The owned diff type.
+        ///
+        /// This type is provided so that users can provide an owned instance to the `push_and_add` method,
+        /// to act as a scratch space when the type is substantial and could otherwise require allocations.
+        type DiffOwned: Default;
+
+        /// Push an entry that adds together two diffs.
+        ///
+        /// This is only called when two items are deemed mergeable by the container queue.
+        /// If the two diffs added together is zero do not push anything.
+        fn push_and_add<'a>(&mut self, item1: <Self::Container as Container>::Item<'a>, item2: <Self::Container as Container>::Item<'a>, stash: &mut Self::DiffOwned);
+    }
+
+    impl<D, T, R> PushAndAdd for CapacityContainerBuilder<Vec<(D, T, R)>>
+    where
+        D: Clone + 'static,
+        T: Clone + 'static,
+        R: Semigroup + 'static,
+        Self: PushInto<(D, T, R)>,
+    {
+        type DiffOwned = ();
+
+        fn push_and_add<'a>(&mut self, item1: <Self::Container as Container>::Item<'a>, item2: <Self::Container as Container>::Item<'a>, _stash: &mut Self::DiffOwned) {
+            let (data, time, mut diff1) = item1;
+            let (_data, _time, diff2) = item2;
+            diff1.plus_equals(&diff2);
+            if !diff1.is_zero() {
+                self.push_into((data, time, diff1));
+            }
+        }
+    }
+
+    impl<D, T, R> PushAndAdd for TimelyStackBuilder<(D, T, R)>
+    where
+        D: Columnation + Clone + 'static,
+        T: Columnation + Clone + 'static,
+        R: Columnation + Default + Semigroup + 'static,
+        Self: for<'a> PushInto<&'a (D, T, R)>,
+    {
+        type DiffOwned = R;
+
+        fn push_and_add<'a>(&mut self, item1: <Self::Container as Container>::Item<'a>, item2: <Self::Container as Container>::Item<'a>, stash: &mut Self::DiffOwned) {
+            let (data, time, diff1) = item1;
+            let (_data, _time, diff2) = item2;
+            stash.clone_from(diff1);
+            stash.plus_equals(diff2);
+            if !stash.is_zero() {
+                // Ensure capacity
+                self.current.ensure_capacity(&mut self.empty);
+
+                // Push item
+                self.current.copy_destructured(data, time, stash);
+
+                // Maybe flush
+                if self.current.at_capacity() {
+                    self.pending.push_back(std::mem::take(&mut self.current));
+                }
+            }
+        }
+    }
+
+    mod cry {
+        use std::collections::VecDeque;
+
+        use timely::container::{ContainerBuilder, LengthPreservingContainerBuilder, PushInto, SizableContainer};
+        use columnation::Columnation;
+        use crate::containers::TimelyStack;
+
+        /// A default container builder that uses length and preferred capacity to chunk data.
+        ///
+        /// Maintains a single empty allocation between [`Self::push_into`] and [`Self::extract`], but not
+        /// across [`Self::finish`] to maintain a low memory footprint.
+        ///
+        /// Maintains FIFO order.
+        #[derive(Debug)]
+        pub struct TimelyStackBuilder<C: Columnation>{
+            /// Container that we're writing to.
+            pub(crate) current: TimelyStack<C>,
+            /// Empty allocation.
+            pub(crate) empty: Option<TimelyStack<C>>,
+            /// Completed containers pending to be sent.
+            pub(crate) pending: VecDeque<TimelyStack<C>>,
+        }
+
+        impl<C: Columnation> Default for TimelyStackBuilder<C> {
+            fn default() -> Self {
+                Self {
+                    current: TimelyStack::default(),
+                    empty: None,
+                    pending: VecDeque::new(),
+                }
+            }
+        }
+
+        impl<T: Columnation> PushInto<&T> for TimelyStackBuilder<T> {
+            #[inline(always)]
+            fn push_into(&mut self, item: &T) {
+                // Ensure capacity
+                self.current.ensure_capacity(&mut self.empty);
+
+                // Push item
+                self.current.copy(item);
+
+                // Maybe flush
+                if self.current.at_capacity() {
+                    self.pending.push_back(std::mem::take(&mut self.current));
+                }
+            }
+        }
+
+        impl<C: Columnation + Clone + 'static> ContainerBuilder for TimelyStackBuilder<C> {
+            type Container = TimelyStack<C>;
+
+            #[inline]
+            fn extract(&mut self) -> Option<&mut TimelyStack<C>> {
+                if let Some(container) = self.pending.pop_front() {
+                    self.empty = Some(container);
+                    self.empty.as_mut()
+                } else {
+                    None
+                }
+            }
+
+            #[inline]
+            fn finish(&mut self) -> Option<&mut TimelyStack<C>> {
+                if !self.current.is_empty() {
+                    self.pending.push_back(std::mem::take(&mut self.current));
+                }
+                self.empty = self.pending.pop_front();
+                self.empty.as_mut()
+            }
+        }
+
+        impl<C: Columnation + Clone + 'static> LengthPreservingContainerBuilder for TimelyStackBuilder<C> { }
+
+    }
+
     /// A merger for arbitrary containers.
     ///
     /// `MC` is a [`Container`] that implements [`MergerChunk`].
     /// `CQ` is a [`ContainerQueue`] supporting `MC`.
-    pub struct ContainerMerger<MC, CQ> {
-        _marker: PhantomData<(MC, CQ)>,
+    pub struct ContainerMerger<MCB, CQ> {
+        builder: MCB,
+        _marker: PhantomData<CQ>,
     }
 
-    impl<MC, CQ> Default for ContainerMerger<MC, CQ> {
+    impl<MCB: Default, CQ> Default for ContainerMerger<MCB, CQ> {
         fn default() -> Self {
-            Self { _marker: PhantomData, }
+            Self { builder: MCB::default(), _marker: PhantomData, }
         }
     }
 
-    impl<MC: MergerChunk, CQ> ContainerMerger<MC, CQ> {
-        /// Helper to get pre-sized vector from the stash.
-        #[inline]
-        fn empty(&self, stash: &mut Vec<MC>) -> MC {
-            stash.pop().unwrap_or_else(|| {
-                let mut container = MC::default();
-                container.ensure_capacity(&mut None);
-                container
-            })
+    impl<MCB: ContainerBuilder, CQ> ContainerMerger<MCB, CQ> {
+        /// Helper to extract chunks from the builder and push them into the output.
+        #[inline(always)]
+        fn extract_chunks(builder: &mut MCB, output: &mut Vec<MCB::Container>, stash: &mut Vec<MCB::Container>) {
+            while let Some(chunk) = builder.extract() {
+                let chunk = std::mem::replace(chunk, stash.pop().unwrap_or_default());
+                output.push_into(chunk);
+            }
         }
-        /// Helper to return a chunk to the stash.
+
+        /// Helper to finish the builder and push the chunks into the output.
         #[inline]
-        fn recycle(&self, mut chunk: MC, stash: &mut Vec<MC>) {
-            // TODO: Should we only retain correctly sized containers?
-            chunk.clear();
-            stash.push(chunk);
+        fn finish_chunks(builder: &mut MCB, output: &mut Vec<MCB::Container>, stash: &mut Vec<MCB::Container>) {
+            while let Some(chunk) = builder.finish() {
+                let chunk = std::mem::replace(chunk, stash.pop().unwrap_or_default());
+                output.push_into(chunk);
+            }
         }
     }
 
-    impl<MC, CQ> Merger for ContainerMerger<MC, CQ>
+    impl<MCB, CQ> Merger for ContainerMerger<MCB, CQ>
     where
-        for<'a> MC: MergerChunk + Clone + PushInto<<MC as Container>::Item<'a>> + 'static,
-        for<'a> MC::TimeOwned: Ord + PartialOrder + Data,
-        CQ: ContainerQueue<MC>,
+        MCB: ContainerBuilder + for<'a> PushInto<<MCB::Container as Container>::Item<'a>> + PushAndAdd,
+        for<'a> MCB::Container: MergerChunk + Clone + 'static,
+        for<'a> <MCB::Container as MergerChunk>::TimeOwned: Ord + PartialOrder + Data,
+        CQ: ContainerQueue<MCB::Container>,
     {
-        type Time = MC::TimeOwned;
-        type Chunk = MC;
+        type Time = <MCB::Container as MergerChunk>::TimeOwned;
+        type Chunk = MCB::Container;
 
         // TODO: Consider integrating with `ConsolidateLayout`.
         fn merge(&mut self, list1: Vec<Self::Chunk>, list2: Vec<Self::Chunk>, output: &mut Vec<Self::Chunk>, stash: &mut Vec<Self::Chunk>) {
@@ -345,73 +479,58 @@ pub mod container {
             let mut head1 = CQ::from(list1.next().unwrap_or_default());
             let mut head2 = CQ::from(list2.next().unwrap_or_default());
 
-            let mut result = self.empty(stash);
-
             let mut diff_owned = Default::default();
 
             // while we have valid data in each input, merge.
             while !head1.is_empty() && !head2.is_empty() {
-                while !result.at_capacity() && !head1.is_empty() && !head2.is_empty() {
+                while !head1.is_empty() && !head2.is_empty() {
                     let cmp = head1.cmp_heads(&head2);
                     // TODO: The following less/greater branches could plausibly be a good moment for
                     // `copy_range`, on account of runs of records that might benefit more from a
                     // `memcpy`.
                     match cmp {
                         Ordering::Less => {
-                            result.push_into(head1.next_or_alloc().ok().unwrap());
+                            self.builder.push_into(head1.next_or_alloc().ok().unwrap());
                         }
                         Ordering::Greater => {
-                            result.push_into(head2.next_or_alloc().ok().unwrap());
+                            self.builder.push_into(head2.next_or_alloc().ok().unwrap());
                         }
                         Ordering::Equal => {
                             let item1 = head1.next_or_alloc().ok().unwrap();
                             let item2 = head2.next_or_alloc().ok().unwrap();
-                            result.push_and_add(item1, item2, &mut diff_owned);
+                            self.builder.push_and_add(item1, item2, &mut diff_owned);
                        }
                     }
                 }
 
-                if result.at_capacity() {
-                    output.push_into(result);
-                    result = self.empty(stash);
-                }
+                Self::extract_chunks(&mut self.builder, output, stash);
 
                 if head1.is_empty() {
-                    self.recycle(head1.next_or_alloc().err().unwrap(), stash);
+                    let chunk = head1.next_or_alloc().err().unwrap();
+                    stash.push(chunk);
                     head1 = CQ::from(list1.next().unwrap_or_default());
                 }
                 if head2.is_empty() {
-                    self.recycle(head2.next_or_alloc().err().unwrap(), stash);
+                    let chunk = head2.next_or_alloc().err().unwrap();
+                    stash.push(chunk);
                     head2 = CQ::from(list2.next().unwrap_or_default());
                 }
             }
 
             // TODO: recycle `head1` rather than discarding.
             while let Ok(next) = head1.next_or_alloc() {
-                result.push_into(next);
-                if result.at_capacity() {
-                    output.push_into(result);
-                    result = self.empty(stash);
-                }
+                self.builder.push_into(next);
+                Self::extract_chunks(&mut self.builder, output, stash);
             }
-            if !result.is_empty() {
-                output.push_into(result);
-                result = self.empty(stash);
-            }
+            Self::finish_chunks(&mut self.builder, output, stash);
             output.extend(list1);
 
             // TODO: recycle `head2` rather than discarding.
             while let Ok(next) = head2.next_or_alloc() {
-                result.push_into(next);
-                if result.at_capacity() {
-                    output.push(result);
-                    result = self.empty(stash);
-                }
+                self.builder.push_into(next);
+                Self::extract_chunks(&mut self.builder, output, stash);
             }
-            if !result.is_empty() {
-                output.push_into(result);
-                // result = self.empty(stash);
-            }
+            Self::finish_chunks(&mut self.builder, output, stash);
             output.extend(list2);
         }
 
@@ -424,35 +543,34 @@ pub mod container {
             kept: &mut Vec<Self::Chunk>,
             stash: &mut Vec<Self::Chunk>,
         ) {
-            let mut keep = self.empty(stash);
-            let mut ready = self.empty(stash);
+            let mut keep = MCB::default();
+
+            let mut keep_count = 0;
+            let mut ready_count = 0;
+
+            let mut time_stash = Self::Time::minimum();
 
             for mut buffer in merged {
                 for item in buffer.drain() {
-                    if MC::time_kept(&item, &upper, frontier) {
-                        if keep.at_capacity() && !keep.is_empty() {
-                            kept.push(keep);
-                            keep = self.empty(stash);
-                        }
+                    if <MCB::Container as MergerChunk>::time_kept(&item, &upper, frontier, &mut time_stash) {
                         keep.push_into(item);
+                        keep_count += 1;
+                        Self::extract_chunks(&mut keep, kept, stash);
                     } else {
-                        if ready.at_capacity() && !ready.is_empty() {
-                            readied.push(ready);
-                            ready = self.empty(stash);
-                        }
-                        ready.push_into(item);
+                        self.builder.push_into(item);
+                        ready_count += 1;
+                        Self::extract_chunks(&mut self.builder, readied, stash);
                     }
                 }
                 // Recycling buffer.
-                self.recycle(buffer, stash);
+                stash.push(buffer);
             }
-            // Finish the kept data.
-            if !keep.is_empty() {
-                kept.push(keep);
-            }
-            if !ready.is_empty() {
-                readied.push(ready);
-            }
+            // Finish the kept adn readied data.
+            Self::finish_chunks(&mut keep, kept, stash);
+            Self::finish_chunks(&mut self.builder, readied, stash);
+
+            assert_eq!(keep_count, kept.iter().map(|c| c.len()).sum::<usize>());
+            assert_eq!(ready_count, readied.iter().map(|c| c.len()).sum::<usize>());
         }
 
         /// Account the allocations behind the chunk.
@@ -466,12 +584,13 @@ pub mod container {
     pub mod vec {
 
         use std::collections::VecDeque;
-        use timely::progress::{Antichain, frontier::AntichainRef};
+        use timely::container::CapacityContainerBuilder;
+        use timely::progress::{Antichain, frontier::AntichainRef, Timestamp};
         use crate::difference::Semigroup;
         use super::{ContainerQueue, MergerChunk};
 
         /// A `Merger` implementation backed by vector containers.
-        pub type VecMerger<D, T, R> = super::ContainerMerger<Vec<(D, T, R)>, std::collections::VecDeque<(D, T, R)>>;
+        pub type VecMerger<D, T, R> = super::ContainerMerger<CapacityContainerBuilder<Vec<(D, T, R)>>, std::collections::VecDeque<(D, T, R)>>;
 
         impl<D: Ord, T: Ord, R> ContainerQueue<Vec<(D, T, R)>> for VecDeque<(D, T, R)> {
             fn next_or_alloc(&mut self) -> Result<(D, T, R), Vec<(D, T, R)>> {
@@ -495,24 +614,15 @@ pub mod container {
             }
         }
 
-        impl<D: Ord + 'static, T: Ord + timely::PartialOrder + Clone + 'static, R: Semigroup + 'static> MergerChunk for Vec<(D, T, R)> {
+        impl<D: Ord + 'static, T: Timestamp, R: Semigroup + 'static> MergerChunk for Vec<(D, T, R)> {
             type TimeOwned = T;
-            type DiffOwned = ();
 
-            fn time_kept((_, time, _): &Self::Item<'_>, upper: &AntichainRef<Self::TimeOwned>, frontier: &mut Antichain<Self::TimeOwned>) -> bool {
+            fn time_kept((_, time, _): &Self::Item<'_>, upper: &AntichainRef<Self::TimeOwned>, frontier: &mut Antichain<Self::TimeOwned>, _stash: &mut T) -> bool {
                 if upper.less_equal(time) {
-                    frontier.insert_with(&time, |time| time.clone());
+                    frontier.insert_with(time, |time| time.clone());
                     true
                 }
                 else { false }
-            }
-            fn push_and_add<'a>(&mut self, item1: Self::Item<'a>, item2: Self::Item<'a>, _stash: &mut Self::DiffOwned) {
-                let (data, time, mut diff1) = item1;
-                let (_data, _time, diff2) = item2;
-                diff1.plus_equals(&diff2);
-                if !diff1.is_zero() {
-                    self.push((data, time, diff1));
-                }
             }
             fn account(&self) -> (usize, usize, usize, usize) {
                 let (size, capacity, allocations) = (0, 0, 0);
@@ -522,19 +632,21 @@ pub mod container {
     }
 
     pub use columnation::ColMerger;
+    use crate::difference::Semigroup;
+    use crate::trace::implementations::merge_batcher::container::cry::TimelyStackBuilder;
+
     /// Implementations of `ContainerQueue` and `MergerChunk` for `TimelyStack` containers (columnation).
     pub mod columnation {
 
-        use timely::progress::{Antichain, frontier::AntichainRef};
+        use timely::progress::{Antichain, frontier::AntichainRef, Timestamp};
         use columnation::Columnation;
-
         use crate::containers::TimelyStack;
         use crate::difference::Semigroup;
-
+        use crate::trace::implementations::merge_batcher::container::cry::TimelyStackBuilder;
         use super::{ContainerQueue, MergerChunk};
 
         /// A `Merger` implementation backed by `TimelyStack` containers (columnation).
-        pub type ColMerger<D, T, R> = super::ContainerMerger<TimelyStack<(D,T,R)>,TimelyStackQueue<(D, T, R)>>;
+        pub type ColMerger<D, T, R> = super::ContainerMerger<TimelyStackBuilder<(D,T,R)>,TimelyStackQueue<(D, T, R)>>;
 
         /// TODO
         pub struct TimelyStackQueue<T: Columnation> {
@@ -575,25 +687,14 @@ pub mod container {
             }
         }
 
-        impl<D: Ord + Columnation + 'static, T: Ord + timely::PartialOrder + Clone + Columnation + 'static, R: Default + Semigroup + Columnation + 'static> MergerChunk for TimelyStack<(D, T, R)> {
+        impl<D: Ord + Columnation + 'static, T: Timestamp + Columnation, R: Default + Semigroup + Columnation + 'static> MergerChunk for TimelyStack<(D, T, R)> {
             type TimeOwned = T;
-            type DiffOwned = R;
-
-            fn time_kept((_, time, _): &Self::Item<'_>, upper: &AntichainRef<Self::TimeOwned>, frontier: &mut Antichain<Self::TimeOwned>) -> bool {
+            fn time_kept((_, time, _): &Self::Item<'_>, upper: &AntichainRef<Self::TimeOwned>, frontier: &mut Antichain<Self::TimeOwned>, _stash: &mut T) -> bool {
                 if upper.less_equal(time) {
-                    frontier.insert_with(&time, |time| time.clone());
+                    frontier.insert_with(time, |time| time.clone());
                     true
                 }
                 else { false }
-            }
-            fn push_and_add<'a>(&mut self, item1: Self::Item<'a>, item2: Self::Item<'a>, stash: &mut Self::DiffOwned) {
-                let (data, time, diff1) = item1;
-                let (_data, _time, diff2) = item2;
-                stash.clone_from(diff1);
-                stash.plus_equals(&diff2);
-                if !stash.is_zero() {
-                    self.copy_destructured(data, time, stash);
-                }
             }
             fn account(&self) -> (usize, usize, usize, usize) {
                 let (mut size, mut capacity, mut allocations) = (0, 0, 0);
