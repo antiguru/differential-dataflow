@@ -436,48 +436,40 @@ pub mod batcher {
         CB: ContainerBuilder + for<'b, 'c> PushInto<(D::Ref<'b>, T::Ref<'b>, &'c R)>,
     {
         fn push_into(&mut self, container: &'a mut Column<(D, T, R)>) {
+            // Sort input data
+            // TODO: consider `Vec<usize>` that we retain, containing indexes.
+            let mut permutation = Vec::with_capacity(container.len());
+            permutation.extend(container.drain());
+            permutation.sort();
 
-            // Scoped to let borrow through `permutation` drop.
-            {
-                // Sort input data
-                // TODO: consider `Vec<usize>` that we retain, containing indexes.
-                let mut permutation = Vec::with_capacity(container.len());
-                permutation.extend(container.drain());
-                permutation.sort();
+            // Iterate over the data, accumulating diffs for like keys.
+            let mut iter = permutation.drain(..);
+            if let Some((data, time, diff)) = iter.next() {
 
-                // Iterate over the data, accumulating diffs for like keys.
-                let mut iter = permutation.drain(..);
-                if let Some((data, time, diff)) = iter.next() {
+                let mut prev_data = data;
+                let mut prev_time = time;
+                let mut prev_diff = <R as Columnar>::into_owned(diff);
 
-                    let mut prev_data = data;
-                    let mut prev_time = time;
-                    let mut prev_diff = <R as Columnar>::into_owned(diff);
-
-                    for (data, time, diff) in iter {
-                        if (&prev_data, &prev_time) == (&data, &time) {
-                            prev_diff.plus_equals(&diff);
-                        }
-                        else {
-                            if !prev_diff.is_zero() {
-                                let tuple = (prev_data, prev_time, &prev_diff);
-                                self.builder.push_into(tuple);
-                            }
-                            prev_data = data;
-                            prev_time = time;
-                            prev_diff = <R as Columnar>::into_owned(diff);
-                        }
+                for (data, time, diff) in iter {
+                    if (&prev_data, &prev_time) == (&data, &time) {
+                        prev_diff.plus_equals(&diff);
                     }
-
-                    if !prev_diff.is_zero() {
-                        let tuple = (prev_data, prev_time, &prev_diff);
-                        self.builder.push_into(tuple);
+                    else {
+                        if !prev_diff.is_zero() {
+                            let tuple = (prev_data, prev_time, &prev_diff);
+                            self.builder.push_into(tuple);
+                        }
+                        prev_data = data;
+                        prev_time = time;
+                        prev_diff = <R as Columnar>::into_owned(diff);
                     }
                 }
+
+                if !prev_diff.is_zero() {
+                    let tuple = (prev_data, prev_time, &prev_diff);
+                    self.builder.push_into(tuple);
+                }
             }
-            //
-            // if !self.empty.is_empty() {
-            //     self.ready.push_back(std::mem::take(&mut self.empty));
-            // }
         }
     }
 
