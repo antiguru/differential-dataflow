@@ -70,7 +70,7 @@ def pct(xs, p):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("json")
-    ap.add_argument("--mode", choices=["find_one", "count"], default="find_one")
+    ap.add_argument("--mode", choices=["find_one", "count", "static"], default="find_one")
     ap.add_argument("--emit", action="store_true")
     args = ap.parse_args()
 
@@ -78,6 +78,15 @@ def main():
     n, d = data["n"], data["d"]
     base = [tuple(p) for p in data["base"]]
     changes = [tuple(p) for p in data["changes"]]
+
+    # Static mode: one-shot over the base instance (no change stream). Measures CP-SAT's
+    # from-scratch find_one and full count, for positioning against WCOJ all-solutions.
+    if args.mode == "static":
+        fo = react_find_one(n, d, base)
+        ct = react_count(n, d, base)
+        # n, d, base, cpsat_find_one_us, cpsat_count_us
+        print(f"{n},{d},{len(base)},{fo:.0f},{ct:.0f}")
+        return
     react = react_find_one if args.mode == "find_one" else react_count
 
     active = set()

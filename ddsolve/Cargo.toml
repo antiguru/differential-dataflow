@@ -8,3 +8,4 @@ publish = false
 [dependencies]
 differential-dataflow = { workspace = true }
 timely = { workspace = true }
+differential-dogs3 = { path = "../dogsdogsdogs" }

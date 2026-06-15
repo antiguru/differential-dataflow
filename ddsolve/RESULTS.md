@@ -453,6 +453,66 @@ wins by 2–3 orders of magnitude and the gap grows with size.
   <pool> <out.json>` then `python compare_cpsat.py <out.json> --mode find_one|count` (needs a venv
   with `ortools`).
 
+## Worst-case-optimal join formulation (`--example wcoj`)
+
+The reified-tree `search` materialises every partial assignment (the frontier) — it is a binary
+join plan that pays for intermediates that may never extend to a solution (the transitive-closure
+blow-up). The all-solutions set is literally the natural join of the per-edge *allowed* relations
+`R_jk(x_j,x_k)`; `wcoj` evaluates it with dogsdogsdogs' count-propose-validate (generic/leapfrog
+join), whose work is bounded by the AGM output bound and which never materialises dead prefixes.
+`wcoj` cross-checks: WCOJ and `search` always agree on the solution count.
+
+### WCOJ vs the reified tree (static all-solutions, seed 1)
+```
+instance            #sols     WCOJ      search     speedup
+n10 d3 e30            864    1.23ms    15.8ms       12.9x
+n12 d3 e30           528     2.45ms    37.0ms       15.1x
+n14 d3 e30           168     2.11ms    30.7ms       14.6x
+n16 d3 e30            60     2.62ms    34.0ms       13.0x
+n12 d4 e20        275,184      171ms     3.86s       22.6x
+n14 d4 e20      2,449,440      884ms    32.5s        36.8x
+n16 d4 e25      2,682,432     3.64s    125.0s        34.3x
+n18 d4 e30         52,464      944ms    22.7s        24.1x
+n20 d4 e35      0 (UNSAT)      269ms     5.53s       20.6x
+```
+**WCOJ beats the reified tree 13–37× across the board.** The clearest case is UNSAT (n20): output
+is empty, so the 20× is pure intermediate-avoidance — `search` still materialised a huge dead
+frontier. Even output-bound cases (n14, 2.4M solutions) get 37× because `search` pays the
+intermediate cost *on top of* the output. **The DD CSP solver should be a WCOJ join, not a reified
+search tree.**
+
+### WCOJ all-solutions vs OR-Tools CP-SAT (same instances; `compare_cpsat.py --mode static`)
+```
+instance         #sols     WCOJ-all   CP-SAT count-all   CP-SAT find-one
+n16 d3 (60)         60      2.6ms          2.3ms             15.9ms
+n18 d4 (52k)        52k     0.94s          0.40s              3.0ms
+n20 d4 (UNSAT)       0      0.27s          3.0ms              2.8ms
+n14 d4 (2.4M)       2.4M    0.88s         10.0s (cap, DNF)    2.5ms
+```
+- **Enumerate-ALL (apples-to-apples): WCOJ is in CP-SAT's league, and better at high output** —
+  it enumerates 2.4M solutions in 0.88 s while CP-SAT's enumerate-all hits its 10 s cap (≥11×);
+  comparable on the tiny instance; ~2.4× behind on the mid one.
+- **find-one / UNSAT: CP-SAT still crushes WCOJ** (90× on UNSAT — 3 ms vs 270 ms). WCOJ computes
+  the entire join regardless; it has no propagation, no conflict-driven early termination, no
+  stop-at-first. It makes the *all-solutions* objective worst-case optimal; it does not change the
+  objective to the cheaper one CP-SAT exploits.
+
+### Verdict
+WCOJ is the right answer to "can we do worst-case optimality here": it removes the reified tree's
+intermediate blow-up (13–37×) and makes DD's all-solutions enumeration competitive with — and at
+high output better than — a production solver's enumerate-all. But it does **not** close the gap on
+the realistic find-one/feasibility/UNSAT tasks, which never materialise the output at all and where
+CDCL-style propagation dominates. Incremental WCOJ (delta-query via `dogsdogsdogs::altneu::AltNeu`)
+is the natural next step for reaction-to-change, with the same caveat: it maintains all solutions,
+so it pays where the answer set is large.
+
+### Upstream bug found + fixed (`dogsdogsdogs/src/operators/lookup_map.rs`)
+The count-propose-validate path panicked (`index out of bounds: len 1 index 1`) on every instance.
+Commit `d15bf322` ("Remove `BatchContainer::borrow_as()`") rewrote the key lookup as
+`key_con.clear(); key_con.push_own(&key1); … key_con.index(1)` — one push leaves the only valid
+index at 0 (the sibling operators `half_join.rs:343` / `half_join2.rs:280` correctly use
+`index(0)`). Fixed both occurrences to `index(0)`. Worth upstreaming.
+
 ## Known limitations (prototype scope)
 
 - Uniform domain, binary extensional constraints only. Aggregate capacity ("≤K tasks per
