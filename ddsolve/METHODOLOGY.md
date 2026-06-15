@@ -91,6 +91,7 @@ the maintained output absorbs each update.
 | `tput` | feed-distribution isolation (w0 vs all) |
 | `openloop` | single-worker offered-load throughput + CCDF |
 | `openloop_par` | multi-worker offered load; knee finder; `max_batch` + `pool_size` knobs |
+| `compare` (+ `compare_cpsat.py`) | head-to-head reaction-to-change vs OR-Tools CP-SAT |
 | `churn` / `learning` / `activity` | Item 2/3 research drivers (not perf) |
 
 ## Meaningful-work run — RETRACTED then FIXED

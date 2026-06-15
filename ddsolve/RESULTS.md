@@ -393,6 +393,66 @@ dynamic order would prioritise: [1, 0, 2, 3, 4, 5]   (vars 6,7: no activity)
 The activity signal exists and diverges from the index order, motivating (but not
 implementing) dynamic variable ordering.
 
+## Head-to-head vs OR-Tools CP-SAT — reaction to constraint changes (`--example compare` + `compare_cpsat.py`)
+
+The honest question for an incremental solver: when a constraint changes, does ddsolve react
+faster than a from-scratch solver re-solving? Setup: `examples/compare.rs` builds an instance +
+a deterministic change stream (each change toggles one forbidden pair) and measures ddsolve's
+INCREMENTAL per-change reaction (time to re-stabilise the maintained *full solution set*).
+`compare_cpsat.py` reads the SAME instance/stream and measures OR-Tools CP-SAT 9.15 (1 search
+worker, model rebuilt + solved per change — CP-SAT keeps no cross-solve state). Single worker
+both sides (CP-SAT has no model-level parallel reaction). Two CP-SAT tasks: `find_one` (the
+realistic scheduler reaction — one feasible assignment) and `count` (enumerate ALL solutions —
+the same task ddsolve performs). Reaction latency in µs, p50/p99 over the stream.
+
+**Caveat:** CP-SAT's ~0.3–0.7 ms median is mostly Python + per-change model rebuild, not solving
+(these solves are µs of real work). A native/persistent CP-SAT harness would be lower still — so
+the gap below *understates* CP-SAT.
+
+### Dense / over-constrained (d=3, edge=30%) — instances stay tiny
+```
+            find_one                         count (apples-to-apples)
+n   dd_p50  cp_p50  cp/dd  dd_p99  cp_p99 |  cp_p50  cp/dd  cp_p99
+8    293     450    1.53   1246     635   |   756    2.58    2430
+12  1000     600    0.60   9030     908   |  1044    1.04    3442
+14   596     594    1.00   7927    1164   |   619    1.04    1928
+16   344     454    1.32   8688    1051   |   461    1.34    1683
+18   269     331    1.23  10556    1234   |   240    0.89    1655
+```
+ddsolve is *competitive at the median* here (within ~2×, occasionally faster) — but only because
+the problems are trivial and CP-SAT's cost is fixed overhead. Note ddsolve's p99 is 5–11 ms vs
+CP-SAT's ~1–3 ms: even when ddsolve wins the median it loses the tail badly (a re-stabilisation
+can touch a large slice of the frontier). At 30% density more vars ⇒ more constraints ⇒ heavier
+pruning ⇒ the frontier *shrinks*, so the instances never get hard.
+
+### Sparse / large solution space (d=4, edge=8%) — the real test, `find_one`
+```
+n    dd_p50      dd_p99     cp_p50   cp/dd     verdict
+10    51,867    1,538,412      555    0.01     CP-SAT ~93x faster
+12   394,399   14,719,890      718    0.00     CP-SAT ~549x faster
+14   >22,000,000 (DNF: 40 changes did not finish in 15 min)   ~600     —     ddsolve collapses; CP-SAT sub-ms
+```
+Once the solution set is non-trivial, ddsolve's maintain-all reaction explodes — **52 ms → 394 ms
+→ DNF** across n=10→14, p99 into multi-second — while CP-SAT `find_one` stays **sub-millisecond
+and flat**. By n=14 ddsolve could not complete 40 changes in 15 minutes (>22 s/change). CP-SAT
+wins by 2–3 orders of magnitude and the gap grows with size.
+
+### Verdict
+- **The asymmetry is the point: ddsolve maintains EVERY solution; `find_one` returns ONE.** When
+  you only need one feasible placement (the scheduler use case), maintaining the whole set is
+  fundamentally more work, and incrementality does not recover the gap — it is dominated by orders
+  of magnitude as soon as the solution space is large.
+- **ddsolve is only competitive where the problem is trivial** (small/over-constrained), and even
+  there it loses the tail. It is never *faster* in the regime where incremental maintenance is
+  supposed to pay.
+- **Apples-to-apples (`count` all solutions):** roughly even on the tiny dense instances; on the
+  sparse ones both are expensive (CP-SAT enumerate-all would hit its 10 s cap; not run) — so the
+  niche where symmetric incremental maintain-all beats re-enumeration was not reachable before
+  ddsolve's frontier blows up (consistent with the memory finding: frontier ∝ solutions).
+- Reproduce: `cargo run -p ddsolve --example compare --release -- <n> <d> <edge%> <seed> <changes>
+  <pool> <out.json>` then `python compare_cpsat.py <out.json> --mode find_one|count` (needs a venv
+  with `ortools`).
+
 ## Known limitations (prototype scope)
 
 - Uniform domain, binary extensional constraints only. Aggregate capacity ("≤K tasks per
