@@ -513,6 +513,57 @@ Commit `d15bf322` ("Remove `BatchContainer::borrow_as()`") rewrote the key looku
 index at 0 (the sibling operators `half_join.rs:343` / `half_join2.rs:280` correctly use
 `index(0)`). Fixed both occurrences to `index(0)`. Worth upstreaming.
 
+## Incremental delta join — reaction to constraint changes (`--example wcoj_delta`)
+
+The reified `search` and the static `wcoj` both recompute against the whole frontier per change.
+`wcoj_delta` maintains the all-solutions join *incrementally* as a proper delta query
+(`dogsdogsdogs::altneu::AltNeu`): one delta rule per edge, driven by that edge's updates, joined
+against the others (earlier edges at ALT/old, later at NEU/new), each rule a count-propose-validate
+generic join. Work tracks the *output delta*, not the frontier. Change stream = toggle a forbidden
+value-pair on an existing edge; validated against a host brute count after every change (always
+agrees with `search` and the oracle).
+
+### Delta join vs the reified tree (per-change reaction, seed 1)
+```
+instance        #sols    delta p50   search p50   speedup p50   speedup p99
+n8  d3 e40        209      519us       227us         0.44x         2.1x
+n10 d3 e35    0 (UNSAT)   1048us       472us         0.45x         2.7x
+n12 d3 e30         84     2313us       912us         0.39x         5.8x
+n10 d4 e25       4192     1025us     12419us        12.1x         45.4x
+n12 d4 e25      26148     6460us    140496us        21.8x         44.0x
+```
+- **On a non-trivial frontier (d=4) the delta join crushes the reified tree: 12–22× median,
+  44–45× p99.** Work is proportional to the affected output-delta, not the whole frontier.
+- **On tiny/over-constrained d=3 it loses the *median*** (the m-rules × n-extends dataflow has a
+  fixed per-step scheduling cost that dominates when the frontier is trivial) **but still wins the
+  *tail*** (2–6× p99): `search` occasionally does a large re-stabilisation; the delta join is
+  predictable. The median loss is a prototype constant-factor, not fundamental.
+
+### Four-way reaction, same change stream (n=12 d=4, 26,148 solutions, 60 changes)
+```
+approach                          objective       p50_ms   p99_ms
+delta-join (DD, incremental)      maintain ALL      6.5     11.7
+reified search (DD, incremental)  maintain ALL    140.5    516.7
+CP-SAT count-per-change (scratch) count ALL       328.4   1344.5
+CP-SAT find-one-per-change        find ONE          0.84     1.2
+```
+- **delta-join beats CP-SAT count-all by ~50×** (6.5 ms vs 328 ms) — *incrementality finally pays
+  for the maintain-all objective*: the delta join recomputes only the output-delta, while CP-SAT
+  re-enumerates all 26k solutions from scratch every change. This is the win the whole exercise was
+  looking for, and it only exists for maintain-all.
+- **CP-SAT find-one still wins ~8×** (0.84 ms) — it solves a fundamentally cheaper problem.
+  Maintaining 26k solutions cannot beat finding one, no matter how incrementally; the gap is
+  objective, not algorithmic.
+
+### Verdict (the complete arc)
+WCOJ + delta join is the right answer to "worst-case optimality / delta join here": it removes the
+reified tree's intermediate blow-up (static 13–37×; incremental 12–22× median, 44× tail) and makes
+incremental maintain-all decisively beat from-scratch maintain-all (50× vs CP-SAT count). But it
+does not change the objective: for find-one / feasibility / UNSAT — what a scheduler actually needs
+— CP-SAT's CDCL search still wins, because it never materialises the answer set. Incremental WCOJ
+pays exactly when the task is "keep the full solution set fresh" and the per-change output-delta is
+smaller than a full recompute; it is the wrong tool when one witness suffices.
+
 ## Known limitations (prototype scope)
 
 - Uniform domain, binary extensional constraints only. Aggregate capacity ("≤K tasks per

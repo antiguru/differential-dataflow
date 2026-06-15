@@ -93,6 +93,7 @@ the maintained output absorbs each update.
 | `openloop_par` | multi-worker offered load; knee finder; `max_batch` + `pool_size` knobs |
 | `compare` (+ `compare_cpsat.py`) | head-to-head reaction-to-change vs OR-Tools CP-SAT |
 | `wcoj` | WCOJ (count-propose-validate) all-solutions vs the reified-tree `search` |
+| `wcoj_delta` | incremental WCOJ delta join (AltNeu) reaction vs `search` and CP-SAT |
 | `churn` / `learning` / `activity` | Item 2/3 research drivers (not perf) |
 
 ## Meaningful-work run — RETRACTED then FIXED

@@ -70,12 +70,38 @@ def pct(xs, p):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("json")
-    ap.add_argument("--mode", choices=["find_one", "count", "static"], default="find_one")
+    ap.add_argument(
+        "--mode",
+        choices=["find_one", "count", "static", "delta_count", "delta_find_one"],
+        default="find_one",
+    )
     ap.add_argument("--emit", action="store_true")
     args = ap.parse_args()
 
     data = json.load(open(args.json))
     n, d = data["n"], data["d"]
+
+    # Delta modes: the wcoj_delta dump schema {n,d,edges,base,changes=[g,c,cp]}. Apply the SAME
+    # toggle stream (forbid/unforbid value pair on an existing edge) and measure CP-SAT's
+    # from-scratch reaction per change (count-all or find-one), for comparison vs the delta join.
+    if args.mode in ("delta_count", "delta_find_one"):
+        edges = [tuple(e) for e in data["edges"]]
+        react = react_count if args.mode == "delta_count" else react_find_one
+        # current forbidden set as a set of canonical (a,xa,b,xb)
+        forb = set(tuple(p) for p in data["base"])
+        lat = []
+        for (g, c, cp) in data["changes"]:
+            j, k = edges[g]
+            pair = (j, c, k, cp)
+            if pair in forb:
+                forb.discard(pair)
+            else:
+                forb.add(pair)
+            lat.append(react(n, d, list(forb)))
+        # n, d, changes, cpsat_p50_us, cpsat_p99_us
+        print(f"{n},{d},{len(data['changes'])},{pct(lat,50):.1f},{pct(lat,99):.1f}")
+        return
+
     base = [tuple(p) for p in data["base"]]
     changes = [tuple(p) for p in data["changes"]]
 
