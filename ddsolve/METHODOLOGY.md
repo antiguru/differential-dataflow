@@ -94,6 +94,7 @@ the maintained output absorbs each update.
 | `compare` (+ `compare_cpsat.py`) | head-to-head reaction-to-change vs OR-Tools CP-SAT |
 | `wcoj` | WCOJ (count-propose-validate) all-solutions vs the reified-tree `search` |
 | `wcoj_delta` | incremental WCOJ delta join (AltNeu) reaction vs `search` and CP-SAT |
+| `wcoj_openloop` | open-loop latency CCDF of the delta join (`ddsolve::wcoj` lib) |
 | `churn` / `learning` / `activity` | Item 2/3 research drivers (not perf) |
 
 ## Meaningful-work run — RETRACTED then FIXED

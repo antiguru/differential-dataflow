@@ -18,16 +18,9 @@ use ddsolve::solve::search;
 use ddsolve::types::{Csp, Forbidden, Node, Val};
 
 use differential_dataflow::input::Input;
-use differential_dataflow::VecCollection;
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex};
-
-use differential_dogs3::altneu::AltNeu;
-use differential_dogs3::{CollectionIndex, PrefixExtender, ProposeExtensionMethod};
-
-const SENT: Val = Val::MAX;
-type Pre = Vec<Val>;
 
 struct Rng(u64);
 impl Rng {
@@ -212,117 +205,7 @@ fn delta_join_react(
             }
 
             let acc = acc.clone();
-            let edges2 = edges.clone();
-            let edge_pos2 = edge_pos.clone();
-
-            let sols = scope.scoped::<AltNeu<u64>, _, _>("delta", |inner| {
-                // Per edge: ALT/NEU × forward/reverse indices, plus the ALT driver collection.
-                let mut alt_fwd = Vec::with_capacity(m);
-                let mut alt_rev = Vec::with_capacity(m);
-                let mut neu_fwd = Vec::with_capacity(m);
-                let mut neu_rev = Vec::with_capacity(m);
-                let mut drivers = Vec::with_capacity(m);
-                for c in &edge_cols {
-                    let fwd = c.clone().enter(inner);
-                    let rev = c.clone().enter(inner).map(|(x, y)| (y, x));
-                    let nfwd = c.clone().enter(inner).delay(|t| AltNeu::neu(t.time.clone()));
-                    let nrev = c
-                        .clone()
-                        .enter(inner)
-                        .map(|(x, y)| (y, x))
-                        .delay(|t| AltNeu::neu(t.time.clone()));
-                    alt_fwd.push(CollectionIndex::index(fwd));
-                    alt_rev.push(CollectionIndex::index(rev));
-                    neu_fwd.push(CollectionIndex::index(nfwd));
-                    neu_rev.push(CollectionIndex::index(nrev));
-                    drivers.push(c.clone().enter(inner));
-                }
-
-                // Accumulate the per-rule contributions (the total delta-query output).
-                let mut total: Option<VecCollection<_, Pre, isize>> = None;
-                for i in 0..m {
-                    let (a, b) = (edges2[i].0 as usize, edges2[i].1 as usize);
-
-                    // Seed: the driver edge's pairs as partial assignments binding a and b.
-                    let mut prefix: VecCollection<_, Pre, isize> =
-                        drivers[i].clone().map(move |(xa, xb)| {
-                            let mut p = vec![SENT; nn];
-                            p[a] = xa;
-                            p[b] = xb;
-                            p
-                        });
-                    let mut bound = vec![false; nn];
-                    bound[a] = true;
-                    bound[b] = true;
-
-                    // Bind remaining variables in index order via generic join.
-                    for w in 0..nn {
-                        if bound[w] {
-                            continue;
-                        }
-                        let mut refs: Vec<
-                            &mut dyn PrefixExtender<
-                                '_,
-                                AltNeu<u64>,
-                                isize,
-                                Prefix = Pre,
-                                Extension = Val,
-                            >,
-                        > = Vec::new();
-                        for u in 0..nn {
-                            if !bound[u] || u == w {
-                                continue;
-                            }
-                            let e = (w.min(u) as u16, w.max(u) as u16);
-                            if let Some(&g) = edge_pos2.get(&e) {
-                                let use_alt = g < i;
-                                // Key by the bound endpoint u; propose value of new var w.
-                                let ext: Box<
-                                    dyn PrefixExtender<
-                                        '_,
-                                        AltNeu<u64>,
-                                        isize,
-                                        Prefix = Pre,
-                                        Extension = Val,
-                                    >,
-                                > = if u < w {
-                                    // u == e.0 -> forward index keyed by e.0
-                                    let idx = if use_alt { &alt_fwd[g] } else { &neu_fwd[g] };
-                                    Box::new(idx.extend_using(move |p: &Pre| p[u]))
-                                } else {
-                                    // u == e.1 -> reverse index keyed by e.1
-                                    let idx = if use_alt { &alt_rev[g] } else { &neu_rev[g] };
-                                    Box::new(idx.extend_using(move |p: &Pre| p[u]))
-                                };
-                                refs.push(Box::leak(ext));
-                            }
-                        }
-
-                        prefix = if refs.is_empty() {
-                            prefix.flat_map(move |p| {
-                                (0..d).map(move |c| {
-                                    let mut q = p.clone();
-                                    q[w] = c;
-                                    q
-                                })
-                            })
-                        } else {
-                            prefix.extend(&mut refs).map(move |(mut p, vw)| {
-                                p[w] = vw;
-                                p
-                            })
-                        };
-                        bound[w] = true;
-                    }
-
-                    total = Some(match total {
-                        None => prefix,
-                        Some(t) => t.concat(prefix),
-                    });
-                }
-
-                total.unwrap().leave(scope)
-            });
+            let sols = ddsolve::wcoj::delta_join_solutions(&edge_cols, &edges, &edge_pos, nn, d);
 
             let probe = sols
                 .map(|_| ())

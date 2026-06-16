@@ -7,3 +7,4 @@ pub mod solve;
 pub mod metrics;
 pub mod instic;
 pub mod learn;
+pub mod wcoj;

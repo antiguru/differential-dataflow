@@ -564,6 +564,43 @@ does not change the objective: for find-one / feasibility / UNSAT — what a sch
 pays exactly when the task is "keep the full solution set fresh" and the per-change output-delta is
 smaller than a full recompute; it is the wrong tool when one witness suffices.
 
+## Open-loop latency CCDF of the delta join (`--example wcoj_openloop`)
+
+Drives constraint toggles at a fixed *virtual* arrival rate into the delta join
+(`ddsolve::wcoj::delta_join_solutions`, the same builder `wcoj_delta` validates against the
+oracle), open-loop: change `i` arrives at `i/rate` regardless of system speed; latency =
+completion − virtual arrival (no coordinated omission). Outer timestamp = wall-clock micros;
+warmup excluded. (Driver subtlety: a change must be inserted at the *current open* time and then
+the frontier advanced past it — inserting after advancing leaves it on an open frontier that never
+closes, stalling the probe.)
+
+### Steady-state CCDF (n=10 d=4, 9 edges, 4192 solutions, offered 100/s, 30 s, warmup excluded)
+```
+P[latency > x]   latency_ms
+   1.0000          10.81   (min)
+   0.5000          13.32   (p50)
+   0.1000          16.82   (p90)
+   0.0100          22.81   (p99)
+   0.0010          26.22   (p99.9)
+   max             29.56
+```
+Tight and bounded — p50 13 ms, p99 23 ms, max 30 ms, achieved = offered (ratio 1.0). The
+incremental delta join keeps the full solution set fresh under sustained load with a flat tail.
+
+### The knee (CCDF tail vs offered load)
+```
+offered  ratio   p50      p99      state
+100      1.00    13ms     23ms     stable
+200      1.00    8.6ms    563ms    borderline
+300      0.99    94ms     1.9s     degrading
+400      0.90    666ms    5.4s     saturated
+```
+Capacity ≈ 100–200 changes/s for this instance. The limiter is structural: each round steps *all*
+`m=9` AltNeu delta rules to fixpoint (~10 ms fixed), independent of how few solutions the change
+actually perturbs. Fewer edges → higher capacity. A non-prototype would route a change only to its
+driver rule (and/or shard rules across workers) instead of stepping every rule each round — the
+open question for making incremental WCOJ's *throughput* match its clean per-change latency.
+
 ## Known limitations (prototype scope)
 
 - Uniform domain, binary extensional constraints only. Aggregate capacity ("≤K tasks per
