@@ -1,1 +1,0 @@
-initSidebarItems({"struct":[["EventLink","A linked list of Event<T, D>."]]});

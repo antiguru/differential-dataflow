@@ -1,1 +1,0 @@
-initSidebarItems({"struct":[["Product","A nested pair of timestamps, one outer and one inner."]],"trait":[["Empty","A type that does not affect total orderedness."]]});

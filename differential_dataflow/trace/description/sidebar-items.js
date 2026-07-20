@@ -1,1 +1,0 @@
-initSidebarItems({"struct":[["Description","Describes an interval of partially ordered times."]]});

@@ -1,1 +1,0 @@
-initSidebarItems({"mod":[["ord","Trace and batch implementations based on sorted ranges."],["spine","An append-only collection of update batches."],["spine_fueled","An append-only collection of update batches."]],"struct":[["Batcher","Creates batches from unordered tuples."]]});

@@ -1,1 +1,0 @@
-initSidebarItems({"struct":[["CursorList","Provides a cursor interface over a list of cursors."]]});

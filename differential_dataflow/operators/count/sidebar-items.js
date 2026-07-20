@@ -1,1 +1,0 @@
-initSidebarItems({"trait":[["CountTotal","Extension trait for the `count` differential dataflow method."],["CountTotalCore","Extension trait for the `group_arranged` differential dataflow method."]]});

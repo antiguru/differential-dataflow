@@ -1,1 +1,0 @@
-initSidebarItems({"struct":[["Antichain","A set of mutually incomparable elements."],["AntichainRef","A wrapper for elements of an antichain."],["MutableAntichain","An antichain based on a multiset whose elements frequencies can be updated."]]});

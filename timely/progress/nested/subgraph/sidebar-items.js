@@ -1,1 +1,0 @@
-initSidebarItems({"struct":[["Source","Names a source of a data stream."],["Subgraph","A dataflow subgraph."],["SubgraphBuilder","A builder structure for initializing `Subgraph`s."],["Target","Names a target of a data stream."]]});

@@ -1,1 +1,0 @@
-initSidebarItems({"trait":[["ThresholdTotal","Extension trait for the `distinct` differential dataflow method."]]});

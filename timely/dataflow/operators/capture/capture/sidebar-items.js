@@ -1,1 +1,0 @@
-initSidebarItems({"trait":[["Capture","Capture a stream of timestamped data for later replay."]]});

@@ -1,1 +1,0 @@
-initSidebarItems({"struct":[["InputSession","An input session wrapping a single timely dataflow capability."]],"trait":[["Input","Create a new collection and input handle to control the collection."]]});
